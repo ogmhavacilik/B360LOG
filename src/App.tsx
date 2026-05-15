@@ -113,8 +113,8 @@ const getDriveThumbnail = (url: string) => {
 const isPersonMatch = (logCellValue: any, selectedFullName: string): boolean => {
   if (!logCellValue || !selectedFullName) return false;
   
-  const rawCell = logCellValue.toString().toUpperCase();
-  const rawTarget = selectedFullName.toUpperCase();
+  const rawCell = logCellValue.toString().toUpperCase().trim();
+  const rawTarget = selectedFullName.toUpperCase().trim();
 
   // 1. Literal whole string match (most reliable)
   if (rawCell.includes(rawTarget) || rawTarget.includes(rawCell)) return true;
@@ -129,12 +129,15 @@ const isPersonMatch = (logCellValue: any, selectedFullName: string): boolean => 
   // 2. Direct inclusion of normalized strings
   if (ln.includes(tn) || tn.includes(ln)) return true;
 
-  // 3. Cross-part match (any part of name matches part of cell)
-  if (targetParts.some(part => part.length >= 3 && cellParts.some(cPart => cPart.includes(part) || part.includes(cPart)))) return true;
-
-  // 4. Surname specific match
+  // 3. Surname specific match (Very common for 'TAN')
   const targetSurname = getSurname(selectedFullName);
-  if (targetSurname && targetSurname.length >= 3 && cellParts.includes(targetSurname)) return true;
+  if (targetSurname) {
+    const sn = normalize(targetSurname);
+    if (sn.length >= 3 && cellParts.some(p => p === sn || p.includes(sn))) return true;
+  }
+
+  // 4. Cross-part match (any part of name matches part of cell)
+  if (targetParts.some(part => part.length >= 3 && cellParts.some(cPart => cPart.includes(part) || part.includes(cPart)))) return true;
 
   return false;
 };
@@ -516,22 +519,22 @@ export default function App() {
           const cleaned: FlightLog = {
             id,
             tarih: currentTarih || lastTarih || '',
-            kaptanPilot: val(['Kaptan Pilot', 'Kaptan', 'Captain', 'Pilot 1', 'PİLOT1', 'kaptanPilot'], 2)?.toString() || '',
-            ikinciPilot: val(['2. Pilot', 'Co-Pilot', 'Pilot 2', 'PİLOT2', 'ikinciPilot'], 3)?.toString() || '',
-            teknisyen1: val(['Teknisyen', 'Teknisyen 1', 'Tech 1', 'Ekip', 'TEKNİSYEN1', 'teknisyen1'], 4)?.toString() || '',
-            operator1: val(['Operator', 'Operatör 1', 'Op 1', 'Operatör', 'OPERATÖR1', 'operator1'], 5)?.toString() || '',
-            teknisyen2: val(['Teknisyen', 'Teknisyen 2', 'Teknisyen (2)', 'Tech 2', 'TEKNİSYEN2', 'teknisyen2'], 6)?.toString() || '',
-            operator2: val(['Operator', 'Operatör 2', 'Operator (2)', 'Op 2', 'Operatör (2)', 'OPERATÖR2', 'operator2'], 7)?.toString() || '',
+            kaptanPilot: val(['Kaptan Pilot'], 2)?.toString() || '',
+            ikinciPilot: val(['2. Pilot'], 3)?.toString() || '',
+            teknisyen1: val(['Teknisyen'], 4)?.toString() || '',
+            operator1: val(['Operator', 'Operatör'], 5)?.toString() || '',
+            teknisyen2: val(['Teknisyen'], 6)?.toString() || '',
+            operator2: val(['Operator', 'Operatör'], 7)?.toString() || '',
             gorevTipi: gorevTipi,
-            gorevBolgesi: val(['Görev Bölgesi', 'gorevBolgesi', 'Region'], 9)?.toString() || lastBolge,
-            kalkis: formatTimeValue(val(['Kalkış', 'Takeoff', 'kalkis'], 10)),
-            inis: formatTimeValue(val(['İniş', 'Landing', 'inis'], 11)),
-            ucusSuresi: formatTimeValue(val(['Uçuş Süresi', 'Süre', 'Duration', 'ucusSuresi'], 12)),
-            k9YanginHektar: parseNumeric(val(['TK-9 Yangın(Hektar)', 'YANGIN(Hk)', 'Yangın', 'Fire', 'k9YanginHektar'], 13)),
-            miktarCekim: parseNumeric(val(['Miktar (Çekim)', 'ÇEKİM', 'Miktar', 'Amount', 'miktarCekim'], 14)),
-            tk9GorevHektar: parseNumeric(val(['TK-9 gorev(Hektar)', 'GÖREV(Hk)', 'tk9GorevHektar', 'TK9 Görev'], 15)),
-            uyduDk: parseNumeric(val(['Uydu (Dk)', 'UYDU(Dk)', 'uyduDk', 'Uydu dk'], 16)),
-            aciklama: val(['AÇIKLAMA', 'AÇIKLAMA (R)', 'Açıklama', 'Remarks', 'Description', 'aciklama'], 17)?.toString() || ''
+            gorevBolgesi: val(['Görev Bölgesi'], 9)?.toString() || lastBolge,
+            kalkis: formatTimeValue(val(['Kalkış'], 10)),
+            inis: formatTimeValue(val(['İniş'], 11)),
+            ucusSuresi: formatTimeValue(val(['Uçuş Süresi', 'Süre'], 12)),
+            k9YanginHektar: parseNumeric(val(['TK-9 Yangın(Hektar)', 'YANGIN(Hk)'], 13)),
+            miktarCekim: parseNumeric(val(['Miktar (Çekim)', 'ÇEKİM'], 14)),
+            tk9GorevHektar: parseNumeric(val(['TK-9 gorev(Hektar)', 'GÖREV(Hk)'], 15)),
+            uyduDk: parseNumeric(val(['Uydu (Dk)', 'UYDU(Dk)'], 16)),
+            aciklama: val(['AÇIKLAMA'], 17)?.toString() || ''
           };
           
           processedList.push(cleaned);
@@ -539,10 +542,10 @@ export default function App() {
 
         const list = append ? [...prev, ...processedList] : processedList;
         
-        // Remove duplicates based on all critical fields to be safe
+        // Remove duplicates with high precision to avoid data loss
         const uniqueMap = new Map<string, FlightLog>();
-        list.forEach(item => {
-          const key = `${item.tarih}_${item.id}_${item.kalkis}_${item.kaptanPilot}`;
+        list.forEach((item, idx) => {
+          const key = `${item.tarih}_${item.id}_${item.kalkis}_${item.kaptanPilot}_${idx}`;
           uniqueMap.set(key, item);
         });
 
