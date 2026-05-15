@@ -1,0 +1,31 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  
+  --color-forest-dark: #082d22;
+  --color-forest-base: #0B3D2E;
+  --color-forest-light: #163131;
+}
+
+@layer base {
+  body {
+    @apply bg-forest-base text-emerald-50 antialiased;
+  }
+}
+
+/* Custom scrollbar for the dark theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-forest-dark;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-emerald-900 rounded-full hover:bg-emerald-800 transition-colors;
+}
