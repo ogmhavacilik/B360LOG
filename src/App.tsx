@@ -22,18 +22,21 @@ import {
   AlertCircle,
   CheckCircle2,
   FileText,
-  Trash2
+  Trash2,
+  Lock
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
 import { motion, AnimatePresence } from 'motion/react';
 import XLSX from 'xlsx-js-style';
 import { FlightLog, PILOTS, TECHNICIANS, GOREV_TIPLERI } from './types';
+import { STATIC_PERSON_LIST } from './staticPersonnel';
 
 // Google Apps Script URLs
 const GAS_URL = 'https://script.google.com/macros/s/AKfycbwpqbW9sHqUZIUwGf4naJN_ZH0aCXvGEYSdqBN6mftyFVZGAofjrnMPfutcO5maBc4/exec';
 const PILOT_DATA_URL = 'https://script.google.com/macros/s/AKfycbx5jJmZ6sU8qpSwCFwp41z_7fJYy-buB4BD5686jAoM3xqVw39m3q3iDbkVbQCDUZ5U/exec';
-const TECH_DATA_URL = 'https://script.google.com/macros/s/AKfycbzjgsoveqIQS4iLXDBYJrIuYX5yryjj1AKVdejNPCrzL1lSx0EYAEX2ZhcE94uDLpuc/exec';
+const TECH_DATA_URL = 'https://script.google.com/macros/s/AKfycbwcRIUfG0WfyEb5aWiJnpiNTvbo5XGz_WcetUlkoQGmZuTTBxvdsvsV2HQRPq8ewqEy/exec';
+const PERSONNEL_SHEET_URL = 'https://script.google.com/macros/s/AKfycbytVmnCY7Spjg-Rges0k-BgEJqZSM8iNJoXu0UHuKFeubm4vlSzemzzVec4UgUQ96Q7/exec';
 
 interface PersonData {
   fullName: string;
@@ -111,33 +114,56 @@ const getDriveThumbnail = (url: string) => {
 };
 
 const isPersonMatch = (logCellValue: any, selectedFullName: string): boolean => {
-  if (!logCellValue || !selectedFullName) return false;
+  if (logCellValue === undefined || logCellValue === null || !selectedFullName) return false;
   
-  const rawCell = logCellValue.toString().toUpperCase().trim();
-  const rawTarget = selectedFullName.toUpperCase().trim();
+  const cellStr = logCellValue.toString().trim();
+  if (!cellStr) return false;
 
-  // 1. Literal whole string match (most reliable)
-  if (rawCell.includes(rawTarget) || rawTarget.includes(rawCell)) return true;
+  // Normalizes Turkish characters and casings to standardize comparison
+  const normalizeForMatch = (str: string): string => {
+    return str
+      .replace(/İ/g, "I")
+      .replace(/ı/g, "I")
+      .replace(/Ğ/g, "G")
+      .replace(/ğ/g, "G")
+      .replace(/Ü/g, "U")
+      .replace(/ü/g, "U")
+      .replace(/Ş/g, "S")
+      .replace(/ş/g, "S")
+      .replace(/Ö/g, "O")
+      .replace(/ö/g, "O")
+      .replace(/Ç/g, "C")
+      .replace(/ç/g, "C")
+      .toUpperCase()
+      .replace(/KEBABCI/g, "KEBAPCI")
+      .trim();
+  };
 
-  const ln = normalize(logCellValue.toString());
-  const tn = normalize(selectedFullName);
-  if (!ln || !tn) return false;
+  const cleanCell = normalizeForMatch(cellStr);
+  const cleanTarget = normalizeForMatch(selectedFullName);
 
-  const cellParts = ln.split(/\s+/).filter(Boolean);
-  const targetParts = tn.split(/\s+/).filter(Boolean);
+  if (cleanCell === cleanTarget) return true;
 
-  // 2. Direct inclusion of normalized strings
-  if (ln.includes(tn) || tn.includes(ln)) return true;
+  // Split clean text blocks into arrays of words, removing all punctuation
+  const getWords = (s: string) => {
+    return s
+      .replace(/[^\w\s]/g, ' ')
+      .split(/\s+/)
+      .filter(Boolean);
+  };
 
-  // 3. Surname specific match (Very common for 'TAN')
-  const targetSurname = getSurname(selectedFullName);
-  if (targetSurname) {
-    const sn = normalize(targetSurname);
-    if (sn.length >= 3 && cellParts.some(p => p === sn || p.includes(sn))) return true;
+  const cellWords = getWords(cleanCell);
+  const targetWords = getWords(cleanTarget);
+
+  if (cellWords.length === 0 || targetWords.length === 0) return false;
+
+  // Take the last word as the surname of the selected search target
+  const targetSurname = targetWords[targetWords.length - 1];
+
+  // Returns true only if the surname exists as a full standalone word in the cell words
+  if (cellWords.includes(targetSurname)) {
+    return true;
   }
-
-  // 4. Cross-part match (any part of name matches part of cell)
-  if (targetParts.some(part => part.length >= 3 && cellParts.some(cPart => cPart.includes(part) || part.includes(cPart)))) return true;
 
   return false;
 };
@@ -157,19 +183,70 @@ const parseNumeric = (val: any): number => {
   if (typeof val === 'number') return val;
   
   let str = val.toString().trim();
-  
-  // Standardize Turkish/European format: 1.234,56 -> 1234.56
+  if (!/[0-9]/.test(str)) return 0;
+
+  // Handle string additions like "250+367" or "343+350"
+  if (str.includes('+')) {
+    const parts = str.split('+');
+    return parts.reduce((acc, part) => acc + parseNumeric(part), 0);
+  }
+
+  // Clear spaces that might be used as a thousands separator
+  str = str.replace(/\s/g, '');
+
+  // Remove any unit suffix letters (e.g. "DK", "HK", "ADET", "Col") to avoid interference
+  str = str.replace(/[^0-9.,-]/g, '');
+
+  // Case 1: Has both dot and comma (e.g. "1.289.850,50" or "1,289,850.50")
   if (str.includes(',') && str.includes('.')) {
-    str = str.replace(/\./g, '').replace(',', '.');
-  } else if (str.includes(',')) {
-    str = str.replace(',', '.');
-  } else if (str.match(/^\d+\.\d{3}$/)) {
-    // Case like "44.285" (thousands separator)
-    str = str.replace(/\./g, '');
+    const lastComma = str.lastIndexOf(',');
+    const lastDot = str.lastIndexOf('.');
+    if (lastComma > lastDot) {
+      // Turkish format: "1.289.850,50" -> remove dots, replace comma with dot
+      str = str.replace(/\./g, '').replace(',', '.');
+    } else {
+      // English format: "1,289,850.50" -> remove commas
+      str = str.replace(/,/g, '');
+    }
   } 
-  
+  // Case 2: Only has a comma (e.g. "855350,50" or "1,289,850")
+  else if (str.includes(',')) {
+    const commaCount = (str.match(/,/g) || []).length;
+    if (commaCount > 1) {
+      // Multiple commas -> thousands separator -> remove them
+      str = str.replace(/,/g, '');
+    } else {
+      // Single comma -> decimal separator in Turkish -> replace with dot
+      str = str.replace(',', '.');
+    }
+  } 
+  // Case 3: Only has a dot (e.g. "1.289.850" or "855.350" or "123.45")
+  else if (str.includes('.')) {
+    const dotCount = (str.match(/\./g) || []).length;
+    if (dotCount > 1) {
+      // Multiple dots -> thousands separator -> remove them
+      str = str.replace(/\./g, '');
+    } else {
+      // Single dot -> could be a thousands separator (Turkish binlik) or decimal (English)
+      // If there are exactly 3 digits after the dot and the number can be large, it's a thousands separator
+      const parts = str.split('.');
+      if (parts[1] && parts[1].length === 3) {
+        str = str.replace(/\./g, '');
+      }
+    }
+  }
+
   const num = parseFloat(str);
   return isNaN(num) ? 0 : num;
+};
+
+// Helper to sum Uydu (Dk) while complying with Excel's treatment of text entries
+const parseUyduDkForSum = (val: any): number => {
+  if (val === undefined || val === null || val === '') return 0;
+  if (typeof val === 'number') return val;
+  const str = val.toString().trim();
+  const parsed = parseNumeric(str);
+  return isNaN(parsed) ? 0 : parsed;
 };
 
 const formatTimeValue = (val: any): string => {
@@ -256,7 +333,7 @@ const getPersonStats = (personName: string, logs: FlightLog[], personnelData: Re
       
       totalYanginHektar += Number(log.k9YanginHektar || 0);
       totalGorevHektar += Number(log.tk9GorevHektar || 0);
-      totalUyduDk += Number(log.uyduDk || 0);
+      totalUyduDk += parseUyduDkForSum(log.uyduDk);
       totalCekim += Number(log.miktarCekim || 0);
     }
     return isAnyMatch;
@@ -306,24 +383,106 @@ const getPersonStats = (personName: string, logs: FlightLog[], personnelData: Re
 export default function App() {
   const [activeTab, setActiveTab] = useState<'home' | 'add' | 'search' | 'personnel'>('home');
   const [logs, setLogs] = useState<FlightLog[]>([]);
-  const [personnelData, setPersonnelData] = useState<Record<string, PersonData>>({});
+  const [personnelData, setPersonnelData] = useState<Record<string, PersonData>>(() => {
+    const initial: Record<string, PersonData> = {};
+    STATIC_PERSON_LIST.forEach(p => {
+      initial[normalize(p.fullName)] = {
+        fullName: p.fullName,
+        photoUrl: getDriveThumbnail(p.photoUrl),
+        role: p.role,
+        title: p.title
+      };
+    });
+    return initial;
+  });
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [passwordInput, setPasswordInput] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [isPasswordVerified, setIsPasswordVerified] = useState(false);
+
+  const handleOpenKayitlar = () => {
+    if (isPasswordVerified) {
+      setActiveTab('search');
+    } else {
+      setPasswordInput('');
+      setPasswordError('');
+      setShowPasswordModal(true);
+    }
+  };
+
+  const handleVerifyPassword = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (passwordInput === '360') {
+      setIsPasswordVerified(true);
+      setShowPasswordModal(false);
+      setActiveTab('search');
+    } else {
+      setPasswordError('Hatalı Şifre! Lütfen tekrar deneyin.');
+    }
+  };
   const [searchTerm, setSearchTerm] = useState('');
   const [personnelSearch, setPersonnelSearch] = useState('');
-  const [filters, setFilters] = useState({
-    pilot: '',
-    bolge: '',
-    tip: '',
-    startDate: '',
-    endDate: ''
+  const [isExportingPDF, setIsExportingPDF] = useState(false);
+  const [filters, setFilters] = useState(() => {
+    const currentYear = new Date().getFullYear();
+    return {
+      pilot: '',
+      bolge: '',
+      tip: '',
+      startDate: `${currentYear}-01-01`,
+      endDate: `${currentYear + 1}-01-01`
+    };
   });
 
-  const pilotsInResults = useMemo(() => PILOTS, []);
+  const [personnelFilters, setPersonnelFilters] = useState(() => {
+    const currentYear = new Date().getFullYear();
+    return {
+      startDate: `${currentYear}-01-01`,
+      endDate: `${currentYear + 1}-01-01`
+    };
+  });
 
-  const technicalInResults = useMemo(() => TECHNICIANS, []);
+  const pilotsInResults = useMemo(() => {
+    const list = new Set([...PILOTS]);
+    Object.values(personnelData).forEach((p: PersonData) => {
+      const isPilot = p.role?.toUpperCase().includes('PİLOT') || 
+                      p.role?.toUpperCase().includes('PILOT') || 
+                      p.role?.toUpperCase().includes('KAPTAN') || 
+                      p.title?.toUpperCase().includes('PİLOT') || 
+                      p.title?.toUpperCase().includes('PILOT');
+      if (isPilot) {
+        list.add(p.fullName);
+      }
+    });
+    return Array.from(list).sort();
+  }, [personnelData]);
+
+  const technicalInResults = useMemo(() => {
+    const list = new Set([...TECHNICIANS]);
+    Object.values(personnelData).forEach((p: PersonData) => {
+      const isPilot = p.role?.toUpperCase().includes('PİLOT') || 
+                      p.role?.toUpperCase().includes('PILOT') || 
+                      p.role?.toUpperCase().includes('KAPTAN') || 
+                      p.title?.toUpperCase().includes('PİLOT') || 
+                      p.title?.toUpperCase().includes('PILOT');
+      if (!isPilot) {
+        list.add(p.fullName);
+      }
+    });
+    return Array.from(list).sort();
+  }, [personnelData]);
+
+  const filteredLogsForPersonnel = useMemo(() => {
+    return logs.filter(log => {
+      const matchesStartDate = !personnelFilters.startDate || (log.tarih && log.tarih >= personnelFilters.startDate);
+      const matchesEndDate = !personnelFilters.endDate || (log.tarih && log.tarih <= personnelFilters.endDate);
+      return matchesStartDate && matchesEndDate;
+    });
+  }, [logs, personnelFilters]);
 
   // Fetch extra personnel info (photos)
   const fetchPersonnelInfo = async () => {
@@ -344,76 +503,85 @@ export default function App() {
         }
       };
 
-      const [pilotRes, techRes] = await Promise.all([
+      const [pilotRes, techRes, personnelRes] = await Promise.all([
         getData(PILOT_DATA_URL),
-        getData(TECH_DATA_URL)
+        getData(TECH_DATA_URL),
+        getData(PERSONNEL_SHEET_URL)
       ]);
 
-      const dataMap: Record<string, PersonData> = {};
-      
-      const processItem = (p: any, type: 'pilot' | 'tech') => {
-        if (!p || (Array.isArray(p) && p.length < 2)) return;
+      setPersonnelData(prev => {
+        const dataMap: Record<string, PersonData> = { ...prev };
         
-        let name = '';
-        let photo = '';
-        let role = '';
-        let title = '';
-
-        if (Array.isArray(p)) {
-          // Detect headers and skip
-          const firstVal = p[0]?.toString().toUpperCase();
-          if (firstVal === 'ID' || firstVal === 'AD SOYAD' || p.some(v => v?.toString().toUpperCase() === 'FOTOĞRAF')) return;
-
-          // Search for URL (photo)
-          photo = p.find(val => typeof val === 'string' && (val.includes('drive.google.com') || val.includes('http'))) || '';
+        const processItem = (p: any) => {
+          if (!p) return;
           
-          // Name search: Usually the first long string that isn't a URL or a small specific keyword
-          name = p.find((val, idx) => {
-            if (typeof val !== 'string' || val.length < 3 || val.includes('http')) return false;
-            const up = val.toUpperCase();
-            if (['PİLOT', 'TEKNİSYEN', 'KAPTAN', 'OPERATÖR'].includes(up)) return false;
-            return true;
-          }) || '';
-          
-          role = p.find(val => {
-            if (typeof val !== 'string') return false;
-            const up = val.toUpperCase();
-            return ['PİLOT', 'TEKNİSYEN', 'OPERATÖR'].some(r => up.includes(r));
-          }) || '';
+          let name = '';
+          let photo = '';
+          let role = '';
+          let title = '';
 
-          title = p.find(val => {
-             if (typeof val !== 'string' || val.length < 3 || val.includes('http')) return false;
-             const up = val.toUpperCase();
-             if (['KAPTAN', 'SİSTEM', 'TEKNİK'].some(kw => up.includes(kw))) return true;
-             return false;
-          }) || '';
-        } else {
-          name = p.FULL_NAME || p.fullName || p.adSoyad || p.Name || p["AD SOYAD"] || '';
-          photo = p.PHOTO_URL || p.photoUrl || p.fotograf || p.Photo || p["FOTOĞRAF"] || p["FOTO"] || '';
-          role = p.ROLE || p.role || p["GÖREV"] || '';
-          title = p.TITLE || p.title || p["ÜNVAN"] || '';
-        }
+          if (Array.isArray(p)) {
+            if (p.length < 2) return;
+            const firstVal = p[0]?.toString().toUpperCase();
+            if (firstVal === 'ID' || firstVal === 'AD SOYAD' || p.some(v => v?.toString().toUpperCase() === 'FOTOĞRAF')) return;
 
-        if (name && typeof name === 'string' && name.length > 2) {
-          const cleanName = name.replace(/\s*\(.*?\)\s*/g, '').trim();
-          dataMap[normalize(cleanName)] = {
-            fullName: cleanName,
-            photoUrl: getDriveThumbnail(typeof photo === 'string' ? photo : ''),
-            role: typeof role === 'string' ? role : '',
-            title: typeof title === 'string' ? title : ''
-          };
-        }
-      };
+            // Search for photo URL
+            photo = p.find(val => typeof val === 'string' && (val.includes('drive.google.com') || val.includes('http'))) || '';
+            
+            // Search for Name
+            name = p.find((val) => {
+              if (typeof val !== 'string' || val.length < 3 || val.includes('http')) return false;
+              const up = val.toUpperCase();
+              if (['PİLOT', 'TEKNİSYEN', 'KAPTAN', 'OPERATÖR', 'ŞOFÖR', 'MEMUR', 'İŞÇİ'].includes(up)) return false;
+              return true;
+            }) || '';
+            
+            role = p.find(val => {
+              if (typeof val !== 'string') return false;
+              const up = val.toUpperCase();
+              return ['PİLOT', 'TEKNİSYEN', 'OPERATÖR', 'ŞÖFÖR', 'İŞÇİ', 'MEMUR', 'DİĞER'].some(r => up.includes(r));
+            }) || '';
 
-      const processData = (input: any, type: 'pilot' | 'tech') => {
-        if (!input) return;
-        const arr = Array.isArray(input) ? input : (input.data && Array.isArray(input.data) ? input.data : []);
-        arr.forEach(item => processItem(item, type));
-      };
+            title = p.find(val => {
+               if (typeof val !== 'string' || val.length < 3 || val.includes('http')) return false;
+               const up = val.toUpperCase();
+               if (['KAPTAN', 'SİSTEM', 'TEKNİK', 'TEKNİSYEN', 'TEKNİKER', 'MÜHENDİS', 'ŞÖFÖR', 'İŞÇİ', 'MEMUR'].some(kw => up.includes(kw))) return true;
+               return false;
+            }) || '';
+          } else {
+            name = p.AD_SOYAD || p["AD SOYAD"] || p.fullName || p.FULL_NAME || p.AdSoyad || p.adSoyad || p.Name || p.name || '';
+            photo = p.PHOTO_URL || p["FOTOĞRAF"] || p.photoUrl || p.PHOTO || p.photo || p.fotograf || '';
+            role = p.ROLE || p["GÖREV"] || p.role || p.gorev || p.GÖREV || '';
+            title = p.TITLE || p["ÜNVAN"] || p.title || p.unvan || p.ÜNVAN || '';
+          }
 
-      processData(pilotRes, 'pilot');
-      processData(techRes, 'tech');
-      setPersonnelData(dataMap);
+          if (name && typeof name === 'string' && name.length > 2) {
+            const cleanName = name.replace(/\s*\(.*?\)\s*/g, '').trim();
+            const normKey = normalize(cleanName);
+            const allowedNames = new Set([...PILOTS, ...TECHNICIANS].map(n => normalize(n)));
+            if (allowedNames.has(normKey)) {
+              dataMap[normKey] = {
+                fullName: cleanName,
+                photoUrl: photo ? getDriveThumbnail(typeof photo === 'string' ? photo : '') : (dataMap[normKey]?.photoUrl || ''),
+                role: (typeof role === 'string' ? role : '') || (dataMap[normKey]?.role || ''),
+                title: (typeof title === 'string' ? title : '') || (dataMap[normKey]?.title || '')
+              };
+            }
+          }
+        };
+
+        const processData = (input: any) => {
+          if (!input) return;
+          const arr = Array.isArray(input) ? input : (input.data && Array.isArray(input.data) ? input.data : []);
+          arr.forEach(item => processItem(item));
+        };
+
+        processData(pilotRes);
+        processData(techRes);
+        processData(personnelRes);
+
+        return dataMap;
+      });
     } catch (err) {
       console.warn('Personnel photo data could not be fetched:', err);
     }
@@ -423,11 +591,43 @@ export default function App() {
     setIsLoading(true);
     setSyncError(null);
     try {
-      // User provided script URL
+      // Step 1: Try to fetch the master sheet as raw Excel Binary (.xlsx)
+      // This is 100% immune to duplicate column headers (like Teknisyen / Operator)
+      // because it parses the raw grid values by exact cell index, not object keys.
+      try {
+        const response = await fetch(`${GAS_URL}?action=download&gid=1476570479`);
+        if (response.ok) {
+          const result = await response.json();
+          if (result && result.status === 'success' && result.base64) {
+            const byteCharacters = atob(result.base64);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+              byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            
+            // Read workbook via SheetJS
+            const workbook = XLSX.read(byteArray, { type: 'array' });
+            const firstSheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[firstSheetName];
+            
+            // Convert worksheet to an Array of Arrays (AOA) with headers intact
+            const rawAOA = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+            
+            if (rawAOA && Array.isArray(rawAOA) && rawAOA.length > 0) {
+              processImportedData(rawAOA);
+              setIsLoading(false);
+              return; // Successfully processed raw grid with zero key collision!
+            }
+          }
+        }
+      } catch (excelError) {
+        console.warn('Failed to fetch Excel binary, falling back to JSON get:', excelError);
+      }
+
+      // Step 2: Fallback to standard doGet JSON response if Excel gets blocked or fails
       const url = GAS_URL;
-      
       const response = await fetch(url);
-      
       if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
       
       const data = await response.json();
@@ -446,95 +646,145 @@ export default function App() {
         const processedList: FlightLog[] = [];
         const isAOA = data.length > 0 && Array.isArray(data[0]);
 
-        let lastId = '';
-        let lastTarih = '';
-        let lastBolge = '';
-        
+        // Parse Excel Date Serial (e.g. 44100) or standard ISO/Turkish Date format
+        const parseExcelDate = (val: any): string => {
+          if (val === undefined || val === null || val === '') return '';
+          const str = val.toString().trim();
+          
+          if (/^\d{5}$/.test(str)) {
+            const dateNum = Number(str);
+            const excelDate = new Date((dateNum - 25569) * 86400 * 1000);
+            return excelDate.toISOString().split('T')[0];
+          }
+          
+          if (str.includes('T')) {
+            return str.split('T')[0];
+          }
+          
+          const parts = str.split(/[:./-]/);
+          if (parts.length === 3) {
+            let p0 = parts[0].trim().padStart(2, '0');
+            let p1 = parts[1].trim().padStart(2, '0');
+            let p2 = parts[2].trim();
+            if (p0.length === 4) {
+              return `${p0}-${p1}-${p2}`;
+            } else {
+              if (p2.length === 2) {
+                p2 = p2.startsWith('2') ? `20${p2}` : `19${p2}`;
+              }
+              return `${p2}-${p1}-${p0}`;
+            }
+          }
+          return str;
+        };
+
+        // Parse Excel Time fraction (e.g. 0.58333) or HH:mm format
+        const parseExcelTime = (val: any): string => {
+          if (val === undefined || val === null || val === '') return '00:00';
+          const str = val.toString().trim();
+          
+          const num = Number(str);
+          if (!isNaN(num) && num > 0 && num < 1) {
+            const totalMin = Math.round(num * 1440);
+            const h = Math.floor(totalMin / 60);
+            const m = totalMin % 60;
+            return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+          }
+
+          if (str.includes('T')) {
+            try {
+              const timePart = str.split('T')[1] || '';
+              const parts = timePart.split(':');
+              if (parts.length >= 2) {
+                return `${parts[0].padStart(2, '0')}:${parts[1].padStart(2, '0')}`;
+              }
+            } catch (e) {
+              // Ignore
+            }
+          }
+
+          const parts = str.split(':');
+          if (parts.length >= 2) {
+            const h = parts[0].trim().padStart(2, '0');
+            const m = parts[1].trim().padStart(2, '0');
+            return `${h}:${m}`;
+          }
+
+          return str;
+        };
+
         data.forEach((l, rowIdx) => {
           if (!l) return;
-          if (isAOA && rowIdx === 0 && (l[0]?.toString().includes('Sıra') || l[1]?.toString().includes('Tarih'))) return;
+          
+          // Skip header row if AOA format
+          if (isAOA && rowIdx === 0) {
+            const firstCell = (l[0] || '').toString().toLowerCase();
+            if (firstCell.includes('sıra') || firstCell.includes('tarih') || firstCell.includes('no')) {
+              return;
+            }
+          }
 
           const val = (keys: string[], colIdx?: number) => {
             if (isAOA && Array.isArray(l) && colIdx !== undefined) {
               if (l[colIdx] !== undefined && l[colIdx] !== null && l[colIdx] !== '') return l[colIdx];
             }
-            for (const k of keys) {
-              if (l[k] !== undefined && l[k] !== null && l[k] !== '') return l[k];
-              const target = k.toLowerCase().replace(/[^\w]/g, '');
-              for (const actualKey in l) {
-                if (actualKey.toLowerCase().replace(/[^\w]/g, '') === target) {
-                   if (l[actualKey] !== undefined && l[actualKey] !== null && l[actualKey] !== '') return l[actualKey];
+            if (l && typeof l === 'object' && !Array.isArray(l)) {
+              // Priority 1: Check column index key (e.g. col_4, col_5) which is unique and collision-immune!
+              if (colIdx !== undefined) {
+                const indexKey = 'col_' + colIdx;
+                if (l[indexKey] !== undefined && l[indexKey] !== null && l[indexKey] !== '') return l[indexKey];
+              }
+              // Priority 2: Check standard strings
+              for (const k of keys) {
+                if (l[k] !== undefined && l[k] !== null && l[k] !== '') return l[k];
+                const target = k.toLowerCase().replace(/[^\w]/g, '');
+                for (const actualKey in l) {
+                  const actualClean = actualKey.toLowerCase().replace(/[^\w]/g, '');
+                  if (actualClean === target) {
+                     if (l[actualKey] !== undefined && l[actualKey] !== null && l[actualKey] !== '') return l[actualKey];
+                  }
                 }
               }
             }
-            return null;
+            return '';
           };
 
-          let currentId = (val(['Sıra No', 'id', 'siraNo', 'Log ID', 'No', 'Sira', 'SIRA NO'], 0) || '').toString().trim();
-          if (currentId && !currentId.toLowerCase().includes('tarih')) {
-            lastId = currentId;
-          } else if (!currentId) {
-            // If ID is missing, but row has data, generate a temporary row-based ID to ensure it is not skipped
-            const rowDataCheck = [2, 3, 4, 10, 17].some(idx => val([], idx));
-            if (rowDataCheck) currentId = `row-${rowIdx}`;
-          }
-          
-          const id = currentId || lastId;
-          if (!id) return;
+          const idRaw = (val(['Sıra No', 'id'], 0) || '').toString().trim();
+          if (!idRaw) return;
 
-          const tarihRaw = val(['Tarih', 'date', 'Log Tarihi', 'TARIH'], 1);
-          let currentTarih = '';
-          if (tarihRaw) {
-            const tStr = tarihRaw.toString().trim();
-            if (/^\d{5}$/.test(tStr)) {
-              const excelDate = new Date((Number(tStr) - 25569) * 86400 * 1000);
-              currentTarih = excelDate.toISOString().split('T')[0];
-            } else if (tStr.includes('T')) {
-              currentTarih = tStr.split('T')[0];
-            } else {
-              const parts = tStr.split(/[:./-]/);
-              if (parts.length === 3) {
-                let p0 = parts[0].padStart(2, '0');
-                let p1 = parts[1].padStart(2, '0');
-                let p2 = parts[2].trim();
-                if (p2.length > 4) p2 = p2.slice(-4);
-                if (p2.length === 2) p2 = p2.startsWith('2') ? `20${p2}` : `19${p2}`;
-                currentTarih = `${p2}-${p1}-${p0}`;
-              } else {
-                currentTarih = tStr;
-              }
-            }
-          }
-          
-          if (currentTarih && currentTarih.includes('-')) {
-             const [y, m, d] = currentTarih.split('-');
-             if (y && m && d) lastTarih = `${y.padStart(4, '20')}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
-          }
-          
-          const bolgeRaw = val(['Görev Bölgesi', 'gorevBolgesi', 'Region'], 9);
-          if (bolgeRaw) lastBolge = bolgeRaw.toString();
+          const rawTarih = val(['Tarih', 'tarih'], 1);
+          const historyTarih = parseExcelDate(rawTarih);
 
-          const gorevTipi = val(['Görev Tipi', 'gorevTipi', 'Mission Type'], 8)?.toString() || '';
-          
+          // 1:1 direct column mapping from Excel to FlightLog attributes without changing any text
           const cleaned: FlightLog = {
-            id,
-            tarih: currentTarih || lastTarih || '',
-            kaptanPilot: val(['Kaptan Pilot'], 2)?.toString() || '',
-            ikinciPilot: val(['2. Pilot'], 3)?.toString() || '',
-            teknisyen1: val(['Teknisyen'], 4)?.toString() || '',
-            operator1: val(['Operator', 'Operatör'], 5)?.toString() || '',
-            teknisyen2: val(['Teknisyen'], 6)?.toString() || '',
-            operator2: val(['Operator', 'Operatör'], 7)?.toString() || '',
-            gorevTipi: gorevTipi,
-            gorevBolgesi: val(['Görev Bölgesi'], 9)?.toString() || lastBolge,
-            kalkis: formatTimeValue(val(['Kalkış'], 10)),
-            inis: formatTimeValue(val(['İniş'], 11)),
-            ucusSuresi: formatTimeValue(val(['Uçuş Süresi', 'Süre'], 12)),
-            k9YanginHektar: parseNumeric(val(['TK-9 Yangın(Hektar)', 'YANGIN(Hk)'], 13)),
-            miktarCekim: parseNumeric(val(['Miktar (Çekim)', 'ÇEKİM'], 14)),
-            tk9GorevHektar: parseNumeric(val(['TK-9 gorev(Hektar)', 'GÖREV(Hk)'], 15)),
-            uyduDk: parseNumeric(val(['Uydu (Dk)', 'UYDU(Dk)'], 16)),
-            aciklama: val(['AÇIKLAMA'], 17)?.toString() || ''
+            id: idRaw,
+            tarih: historyTarih,
+            kaptanPilot: (val(['Kaptan Pilot', 'kaptanPilot'], 2) || '').toString().trim(),
+            ikinciPilot: (val(['2. Pilot', 'ikinciPilot'], 3) || '').toString().trim(),
+            teknisyen1: (val(['Teknisyen 1', 'teknisyen1', 'teknisyen', 'Teknisyen'], 4) || '').toString().trim(),
+            operator1: (val(['Operator 1', 'operator1', 'operator', 'Operator', 'operatör', 'Operatör'], 5) || '').toString().trim(),
+            teknisyen2: (val(['Teknisyen 2', 'teknisyen2'], 6) || '').toString().trim(),
+            operator2: (val(['Operator 2', 'operator2', 'Operatör 2'], 7) || '').toString().trim(),
+            gorevTipi: (val(['Görev Tipi', 'gorevTipi'], 8) || '').toString().trim(),
+            gorevBolgesi: (val(['Görev Bölgesi', 'gorevBolgesi'], 9) || '').toString().trim(),
+            kalkis: parseExcelTime(val(['Kalkış', 'kalkis'], 10)),
+            inis: parseExcelTime(val(['İniş', 'inis'], 11)),
+            ucusSuresi: parseExcelTime(val(['Uçuş Süresi', 'Süre', 'ucusSuresi'], 12)) || '00:00',
+            k9YanginHektar: parseNumeric(val(['TK-9 Yangın(Hektar)', 'YANGIN(Hk)', 'k9YanginHektar'], 13)),
+            miktarCekim: parseNumeric(val(['Miktar (Çekim)', 'ÇEKİM', 'miktarCekim'], 14)),
+            tk9GorevHektar: parseNumeric(val(['TK-9 gorev(Hektar)', 'GÖREV(Hk)', 'tk9GorevHektar'], 15)),
+            uyduDk: (() => {
+              const rawVal = val(['Uydu (Dk)', 'UYDU(Dk)', 'uyduDk'], 16);
+              if (rawVal === undefined || rawVal === null) return 0;
+              if (typeof rawVal === 'string') {
+                const trimmed = rawVal.trim();
+                if (trimmed.includes('+')) return trimmed;
+                const parsed = parseNumeric(trimmed);
+                return isNaN(parsed) ? trimmed : parsed;
+              }
+              return rawVal;
+            })(),
+            aciklama: (val(['AÇIKLAMA', 'aciklama'], 17) || '').toString().trim()
           };
           
           processedList.push(cleaned);
@@ -542,17 +792,17 @@ export default function App() {
 
         const list = append ? [...prev, ...processedList] : processedList;
         
-        // Remove duplicates with high precision to avoid data loss
+        // Remove duplicates on id AND tarih to maintain data consistency
         const uniqueMap = new Map<string, FlightLog>();
-        list.forEach((item, idx) => {
-          const key = `${item.tarih}_${item.id}_${item.kalkis}_${item.kaptanPilot}_${idx}`;
+        list.forEach((item) => {
+          const key = `${item.tarih}_${item.id}`;
           uniqueMap.set(key, item);
         });
 
         return Array.from(uniqueMap.values()).sort((a, b) => {
           const idA = parseInt(a.id) || 0;
           const idB = parseInt(b.id) || 0;
-          if (idA !== idB) return idB - idA; // Show newest first in results
+          if (idA !== idB) return idB - idA; // Newest first
           return b.tarih.localeCompare(a.tarih);
         });
       });
@@ -678,11 +928,25 @@ export default function App() {
       const matchesSearch = !s || searchData.some(val => val.includes(s));
       
       const matchesPilot = !filters.pilot || [
-        log.kaptanPilot, log.ikinciPilot, 
-        log.teknisyen1, log.operator1, 
-        log.teknisyen2, log.operator2,
+        log.id,
+        log.tarih,
+        log.kaptanPilot,
+        log.ikinciPilot, 
+        log.teknisyen1,
+        log.operator1, 
+        log.teknisyen2,
+        log.operator2,
+        log.gorevTipi,
+        log.gorevBolgesi,
+        log.kalkis,
+        log.inis,
+        log.ucusSuresi,
+        log.k9YanginHektar,
+        log.miktarCekim,
+        log.tk9GorevHektar,
+        log.uyduDk,
         log.aciklama
-      ].some(name => isPersonMatch(name || '', filters.pilot));
+      ].some(val => isPersonMatch(val, filters.pilot));
 
       const matchesBolge = !filters.bolge || (log.gorevBolgesi && log.gorevBolgesi.toLowerCase().includes(filters.bolge.toLowerCase()));
       const matchesTip = !filters.tip || log.gorevTipi === filters.tip;
@@ -790,9 +1054,36 @@ export default function App() {
 
     // Add summary row
     aoaData.push([]); // spacer
-    aoaData.push(['TOPLAM SÜRE', '', '', '', '', '', '', '', '', '', '', '', totalHoursString]);
+    
+    const sumYangin = Math.round(listToExport.reduce((acc, l) => acc + (Number(l.k9YanginHektar) || 0), 0) * 10) / 10;
+    const sumCekim = listToExport.reduce((acc, l) => acc + (Number(l.miktarCekim) || 0), 0);
+    const sumGorev = Math.round(listToExport.reduce((acc, l) => acc + (Number(l.tk9GorevHektar) || 0), 0) * 10) / 10;
+    const sumUydu = listToExport.reduce((acc, l) => acc + parseUyduDkForSum(l.uyduDk), 0);
+
+    const summaryRow = [
+      'TOPLAM', // Col 0 (A)
+      '',       // Col 1 (B)
+      '',       // Col 2 (C)
+      '',       // Col 3 (D)
+      '',       // Col 4 (E)
+      '',       // Col 5 (F)
+      '',       // Col 6 (G)
+      '',       // Col 7 (H)
+      '',       // Col 8 (I)
+      '',       // Col 9 (J)
+      '',       // Col 10 (K)
+      '',       // Col 11 (L)
+      totalHoursString, // Col 12 (M)
+      sumYangin, // Col 13 (N)
+      sumCekim,  // Col 14 (O)
+      sumGorev,  // Col 15 (P)
+      sumUydu,   // Col 16 (Q)
+      ''        // Col 17 (R)
+    ];
+
+    aoaData.push(summaryRow);
     const lastDataRowIndex = aoaData.length - 1;
-    XLSX.utils.sheet_add_aoa(worksheet, [['TOPLAM SÜRE', '', '', '', '', '', '', '', '', '', '', '', totalHoursString]], { origin: `A${lastDataRowIndex + 1}` });
+    XLSX.utils.sheet_add_aoa(worksheet, [summaryRow], { origin: `A${lastDataRowIndex + 1}` });
 
     // Set full range to ensure all 18 columns are included even if empty
     const range = { s: { r: 0, c: 0 }, e: { r: aoaData.length - 1, c: headers.length - 1 } };
@@ -861,91 +1152,408 @@ export default function App() {
     XLSX.writeFile(workbook, fileName);
   };
 
-  const exportPersonnelToPDF = () => {
+  const exportPersonnelToPDF = async () => {
+    setIsExportingPDF(true);
     const doc = new jsPDF();
     const timestamp = new Date().toLocaleDateString('tr-TR');
-    
-    // Add Turkish fonts support if needed (jspdf supports standard fonts by default)
-    // We'll use doc.text with helvetica
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(18);
-    doc.setTextColor(16, 185, 129); // emerald-500
-    doc.text('OGM B-360 PERSONEL UCUS RAPORU', 105, 15, { align: 'center' });
-    
-    doc.setFontSize(10);
-    doc.setTextColor(100, 116, 139); // slate-500
-    doc.text(`Rapor Tarihi: ${timestamp}`, 105, 22, { align: 'center' });
 
-    let currentY = 35;
+    const toSafePdfText = (text: string) => {
+      if (!text) return '';
+      return text
+        .replace(/Ğ/g, 'G')
+        .replace(/ğ/g, 'g')
+        .replace(/Ü/g, 'U')
+        .replace(/ü/g, 'u')
+        .replace(/Ş/g, 'S')
+        .replace(/ş/g, 's')
+        .replace(/İ/g, 'I')
+        .replace(/ı/g, 'i')
+        .replace(/Ö/g, 'O')
+        .replace(/ö/g, 'o')
+        .replace(/Ç/g, 'C')
+        .replace(/ç/g, 'c');
+    };
 
-    const allPersonnel = [...pilotsInResults, ...technicalInResults].filter(p => p && normalize(p).includes(normalize(personnelSearch)));
+    const getBase64Image = async (url: string): Promise<string | null> => {
+      if (!url) return null;
 
-    if (allPersonnel.length === 0) {
-      doc.text('Arama sonuclarina uygun personel bulunamadi.', 105, 50, { align: 'center' });
-    } else {
-      allPersonnel.forEach((personName, index) => {
-        // Check if we need a new page
-        if (currentY > 250) {
-          doc.addPage();
-          currentY = 20;
-        }
+      // Try multiple proxy services to bypass Google Drive's lacks of CORS headers
+      const proxies = [
+        `https://corsproxy.io/?${encodeURIComponent(url)}`,
+        `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+        `https://images1-focus-opensocial.googleusercontent.com/gadgets/proxy?container=focus&refresh=2592000&url=${encodeURIComponent(url)}`,
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+      ];
 
-        const totalHours = calculateTotalHours(logs, personName);
-        const stats = getPersonStats(personName, logs, personnelData, pilotsInResults.includes(personName) ? 'Pilot' : 'Teknisyen');
-
-        // Person info block
-        doc.setFillColor(248, 250, 252); // slate-50
-        doc.rect(14, currentY, 182, 45, 'F');
-        doc.setDrawColor(226, 232, 240); // slate-200
-        doc.rect(14, currentY, 182, 45, 'S');
-
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(14);
-        doc.setTextColor(30, 41, 59); // slate-800
-        doc.text(personName.toUpperCase(), 20, currentY + 10);
-
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(10);
-        doc.setTextColor(71, 85, 105); // slate-600
-        doc.text(`${stats.role} ${stats.title ? `| ${stats.title}` : ''}`, 20, currentY + 16);
-
-        doc.setFont('helvetica', 'bold');
-        doc.text(`TOPLAM UCUS: ${stats.count}`, 150, currentY + 10);
-        doc.setTextColor(249, 115, 22); // orange-500
-        doc.text(`TOPLAM SURE: ${totalHours}`, 150, currentY + 16);
-
-        // Missions table
-        if (stats.distribution.length > 0) {
-          const missionData = stats.distribution.map(([type, count]) => [type, count]);
-          (doc as any).autoTable({
-            startY: currentY + 22,
-            head: [['Gorev Tipi', 'Adet']],
-            body: missionData,
-            margin: { left: 20 },
-            tableWidth: 80,
-            styles: { fontSize: 8 },
-            headStyles: { fillColor: [16, 185, 129] }
-          });
+      for (const proxyUrl of proxies) {
+        try {
+          console.log(`[PDF Preload] Hitting proxy: ${proxyUrl}`);
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 seconds limit per proxy
           
-          // Total Stats Box
-          const finalY = (doc as any).lastAutoTable.finalY + 5;
-          doc.setFontSize(8);
-          doc.setTextColor(30, 41, 59);
-          doc.text(`Top. Hektar: ${stats.stats.totalHektar}`, 110, currentY + 28);
-          doc.text(`Yangin Hektar: ${stats.stats.yanginHektar}`, 110, currentY + 33);
-          doc.text(`Gorev Hektar: ${stats.stats.gorevHektar}`, 110, currentY + 38);
-          doc.text(`Top. Uydu (Dk): ${stats.stats.uyduDk}`, 150, currentY + 28);
-          doc.text(`Top. Cekim: ${stats.stats.cekim}`, 150, currentY + 33);
-        } else {
-          doc.setFontSize(8);
-          doc.text('Ucus verisi bulunamadi.', 20, currentY + 25);
+          const res = await fetch(proxyUrl, { signal: controller.signal });
+          clearTimeout(timeoutId);
+          
+          if (res.ok) {
+            const blob = await res.blob();
+            if (blob.size > 100) {
+              const b64 = await new Promise<string | null>((resolve) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result as string);
+                reader.onerror = () => resolve(null);
+                reader.readAsDataURL(blob);
+              });
+              if (b64 && (b64.startsWith('data:image/') || b64.length > 500)) {
+                console.log(`[PDF Preload] Succeeded with proxy: ${proxyUrl.split('?')[0]}`);
+                return b64;
+              }
+            }
+          }
+        } catch (err) {
+          console.warn(`[PDF Preload] Proxy fail: ${proxyUrl.split('?')[0]}`, err);
         }
+      }
 
-        currentY += 55;
+      // Final direct fetch fallback
+      try {
+        console.log(`[PDF Preload] Trying direct fetch (no CORS proxy): ${url}`);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2000);
+        const res = await fetch(url, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        if (res.ok) {
+          const blob = await res.blob();
+          if (blob.size > 100) {
+            const b64 = await new Promise<string | null>((resolve) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result as string);
+              reader.onerror = () => resolve(null);
+              reader.readAsDataURL(blob);
+            });
+            if (b64) {
+              console.log("[PDF Preload] Succeeded with direct fetch!");
+              return b64;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("[PDF Preload] Direct fetch fail:", err);
+      }
+
+      return null;
+    };
+
+    function fetchWithTimeout<T>(promise: Promise<T>, timeoutMs: number, fallbackValue: T): Promise<T> {
+      return Promise.race([
+        promise,
+        new Promise<T>((resolve) => setTimeout(() => resolve(fallbackValue), timeoutMs))
+      ]);
+    }
+
+    const filteredPilots = pilotsInResults
+      .filter(p => p && normalize(p).includes(normalize(personnelSearch)))
+      .sort();
+    const filteredTechnical = technicalInResults
+      .filter(p => p && normalize(p).includes(normalize(personnelSearch)))
+      .sort();
+
+    const imageCache: Record<string, string> = {};
+
+    try {
+      const allPersonnelWithRoles = [
+        ...filteredPilots.map(p => ({ name: p, role: 'Pilot' as const })),
+        ...filteredTechnical.map(t => ({ name: t, role: 'Teknisyen' as const }))
+      ];
+
+      console.log(`[PDF Preload] Pre-loading photos for ${allPersonnelWithRoles.length} personnel...`);
+      const promises = allPersonnelWithRoles.map(async ({ name, role }) => {
+        const stats = getPersonStats(name, filteredLogsForPersonnel, personnelData, role);
+        if (stats.photoUrl) {
+          const imgUrl = getDriveThumbnail(stats.photoUrl);
+          if (imgUrl) {
+            console.log(`[PDF Preload] Preloading photo for ${name}: ${imgUrl}`);
+            const b64 = await fetchWithTimeout(getBase64Image(imgUrl), 8000, null); // 8 seconds limit
+            if (b64) {
+              imageCache[name] = b64;
+              console.log(`[PDF Preload] Preloading photo SUCCESS for ${name}`);
+            } else {
+              console.warn(`[PDF Preload] Preloading photo FAILED (null returned) for ${name}`);
+            }
+          }
+        } else {
+          console.log(`[PDF Preload] No photoUrl found for ${name}`);
+        }
+      });
+      await Promise.all(promises);
+      console.log(`[PDF Preload] Pre-loading complete. Cached ${Object.keys(imageCache).length} images.`);
+    } catch (err) {
+      console.error("Error preloading images:", err);
+    }
+
+    let pageNum = 1;
+
+    const formatDateTr = (dateStr: string) => {
+      if (!dateStr) return '-';
+      const parts = dateStr.split('-');
+      if (parts.length === 3) {
+        return `${parts[2]}.${parts[1]}.${parts[0]}`;
+      }
+      return dateStr;
+    };
+
+    const dateRangeText = `Ucus Donemi: ${formatDateTr(personnelFilters.startDate)} - ${formatDateTr(personnelFilters.endDate)}`;
+
+    const drawHeader = (sectionTitle: string) => {
+      // Draw Page Header
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(14);
+      doc.setTextColor(16, 185, 129); // emerald-500
+      doc.text(toSafePdfText('OGM B-360 PERSONEL UCUS RAPORU'), 105, 12, { align: 'center' });
+      
+      doc.setFontSize(8);
+      doc.setTextColor(100, 116, 139); // slate-500
+      doc.text(toSafePdfText(`Rapor Tarihi: ${timestamp} | ${dateRangeText} | Sayfa: ${pageNum}`), 105, 17, { align: 'center' });
+      
+      // Draw Category title
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.setTextColor(234, 179, 8); // amber-500 tint
+      doc.text(toSafePdfText(`— ${sectionTitle} —`), 105, 23, { align: 'center' });
+      
+      // Draw a subtle line underneath the title
+      doc.setDrawColor(6, 78, 59);
+      doc.setLineWidth(0.3);
+      doc.line(14, 25, 196, 25);
+    };
+
+    const drawCard = (personName: string, roleType: 'Pilot' | 'Teknisyen', y: number) => {
+      const totalHours = calculateTotalHours(filteredLogsForPersonnel, personName);
+      const stats = getPersonStats(personName, filteredLogsForPersonnel, personnelData, roleType);
+
+      // Card container fill
+      doc.setFillColor(2, 43, 34); // deep forest green
+      doc.roundedRect(14, y, 182, 58, 2, 2, 'F');
+      
+      // Outline border
+      doc.setDrawColor(16, 185, 129);
+      doc.setLineWidth(0.2);
+      doc.roundedRect(14, y, 182, 58, 2, 2, 'S');
+
+      // Draw Avatar or loaded Base64 image
+      if (imageCache[personName]) {
+        try {
+          doc.addImage(imageCache[personName], 'JPEG', 18, y + 4, 14, 14);
+          
+          // Draw subtle frame border around the dynamic photo
+          doc.setDrawColor(16, 185, 129);
+          doc.setLineWidth(0.3);
+          doc.roundedRect(18, y + 4, 14, 14, 1.5, 1.5, 'S');
+        } catch (imgErr) {
+          console.error("PDF addImage failed:", imgErr);
+          drawInitialsFallback(personName, y);
+        }
+      } else {
+        drawInitialsFallback(personName, y);
+      }
+
+      // Name & Title
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      doc.setTextColor(255, 255, 255);
+      
+      let displayName = personName.toUpperCase();
+      if ((normalize(personName) === 'SERKAN KEBAPCI' || normalize(personName) === 'SERKAN KEBABCI') && roleType === 'Teknisyen') {
+        displayName += " (UCUS TEKNISYENI)";
+      }
+      doc.text(toSafePdfText(displayName), 36, y + 9);
+
+      // Title & Location
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(52, 211, 153); // emerald 400
+      const titleStr = stats.title ? stats.title.toUpperCase() : ('B-360 ' + roleType.toUpperCase());
+      doc.text(toSafePdfText(`${roleType.toUpperCase()} | ${titleStr}`), 36, y + 14);
+
+      // Top-Right: UCUS ADEDI label & count
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(6.5);
+      doc.setTextColor(110, 231, 183); // light emerald
+      doc.text(toSafePdfText("UCUS ADEDI"), 188, y + 8, { align: 'right' });
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(12);
+      doc.setTextColor(255, 255, 255);
+      doc.text(toSafePdfText(`${stats.count} Ucus`), 188, y + 14, { align: 'right' });
+
+      // Inside Sub-Columns layout:
+      // Column 1: "TOPLAM SURE" Box
+      doc.setFillColor(1, 33, 26); // even darker green
+      doc.roundedRect(18, y + 21, 80, 33, 1, 1, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6.5);
+      doc.setTextColor(110, 231, 183);
+      doc.text(toSafePdfText("TOPLAM SURE"), 22, y + 26);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(14);
+      doc.setTextColor(251, 146, 60); // orange-400
+      doc.text(totalHours, 22, y + 32);
+
+      // Stats rows
+      doc.setFontSize(6);
+      
+      // TOP. HEKTAR
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(110, 231, 183);
+      doc.text(toSafePdfText("TOP. HEKTAR:"), 22, y + 38);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(52, 211, 153);
+      doc.text(toSafePdfText(String(stats.stats.totalHektar)), 94, y + 38, { align: 'right' });
+
+      // YANGIN
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(200, 253, 222);
+      doc.text(toSafePdfText("  YANGIN:"), 22, y + 41);
+      doc.text(toSafePdfText(String(stats.stats.yanginHektar)), 94, y + 41, { align: 'right' });
+
+      // GOREV
+      doc.text(toSafePdfText("  GOREV:"), 22, y + 44);
+      doc.text(toSafePdfText(String(stats.stats.gorevHektar)), 94, y + 44, { align: 'right' });
+
+      // UYDU
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(110, 231, 183);
+      doc.text(toSafePdfText("UYDU (DK):"), 22, y + 48.5);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(96, 165, 250); // soft blue
+      doc.text(toSafePdfText(String(stats.stats.uyduDk)), 94, y + 48.5, { align: 'right' });
+
+      // CEKIM
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(110, 231, 183);
+      doc.text(toSafePdfText("CEKIM:"), 22, y + 51.5);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(110, 231, 183);
+      doc.text(toSafePdfText(String(stats.stats.cekim)), 94, y + 51.5, { align: 'right' });
+
+      // Column 2: "GOREV DAGILIMI" Header
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6.5);
+      doc.setTextColor(110, 231, 183);
+      doc.text(toSafePdfText("GOREV DAGILIMI"), 106, y + 25);
+
+      // Mission type rows:
+      const slicedDistribution = stats.distribution.slice(0, 3);
+      if (slicedDistribution.length > 0) {
+        slicedDistribution.forEach((dist, idx) => {
+          const mType = dist[0];
+          const mCount = dist[1];
+          const rowY = y + 28 + idx * 7.5;
+          
+          doc.setFillColor(1, 33, 26);
+          doc.roundedRect(106, rowY, 82, 6.5, 0.8, 0.8, 'F');
+
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(6);
+          doc.setTextColor(200, 253, 222);
+          
+          let labelText = mType;
+          if (labelText.length > 30) {
+            labelText = labelText.substring(0, 28) + '...';
+          }
+          doc.text(toSafePdfText(labelText), 109, rowY + 4.3);
+
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(6.5);
+          doc.setTextColor(52, 211, 153); // emerald green
+          doc.text(toSafePdfText(String(mCount)), 184, rowY + 4.3, { align: 'right' });
+        });
+
+        if (stats.distribution.length > 3) {
+          doc.setFont('helvetica', 'italic');
+          doc.setFontSize(6);
+          doc.setTextColor(110, 231, 183);
+          doc.text(toSafePdfText(`+ ${stats.distribution.length - 3} tip daha`), 147, y + 53, { align: 'center' });
+        }
+      } else {
+        doc.setFont('helvetica', 'italic');
+        doc.setFontSize(6.5);
+        doc.setTextColor(110, 231, 183);
+        doc.text(toSafePdfText("Ucus verisi bulunamadi."), 147, y + 35, { align: 'center' });
+      }
+    };
+
+    const drawInitialsFallback = (personName: string, y: number) => {
+      // Left Avatar/Photo container block
+      doc.setFillColor(6, 78, 59); // lighter dark green
+      doc.roundedRect(18, y + 4, 14, 14, 1.5, 1.5, 'F');
+      
+      // Avatar text (Initials)
+      const names = personName.split(' ');
+      const initials = names.length >= 2 
+        ? (names[0][0] + names[names.length - 1][0]).toUpperCase()
+        : personName.substring(0, 2).toUpperCase();
+      
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.setTextColor(255, 255, 255);
+      doc.text(toSafePdfText(initials), 25, y + 12.5, { align: 'center' });
+    };
+
+    let cardIndexOnPage = 0;
+
+    // Process Pilots
+    if (filteredPilots.length > 0) {
+      drawHeader('UCUS PILOTLARI');
+      
+      filteredPilots.forEach((pilotName, index) => {
+        if (index > 0 && index % 4 === 0) {
+          doc.addPage();
+          pageNum++;
+          cardIndexOnPage = 0;
+          drawHeader('UCUS PILOTLARI');
+        }
+        
+        const yCoord = 27 + cardIndexOnPage * 63;
+        drawCard(pilotName, 'Pilot', yCoord);
+        cardIndexOnPage++;
       });
     }
 
+    // Process Technicians
+    if (filteredTechnical.length > 0) {
+      // Always start technicians on a new page if we already printed pilots!
+      if (filteredPilots.length > 0) {
+        doc.addPage();
+        pageNum++;
+      }
+      cardIndexOnPage = 0;
+      drawHeader('TEKNIK EKIP (UCUS TEKNISYENLERI)');
+
+      filteredTechnical.forEach((techName, index) => {
+        if (index > 0 && index % 4 === 0) {
+          doc.addPage();
+          pageNum++;
+          cardIndexOnPage = 0;
+          drawHeader('TEKNIK EKIP (UCUS TEKNISYENLERI)');
+        }
+
+        const yCoord = 27 + cardIndexOnPage * 63;
+        drawCard(techName, 'Teknisyen', yCoord);
+        cardIndexOnPage++;
+      });
+    }
+
+    if (filteredPilots.length === 0 && filteredTechnical.length === 0) {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.setTextColor(16, 185, 129);
+      doc.text(toSafePdfText('Arama sonuclarina uygun personel bulunamadi.'), 105, 50, { align: 'center' });
+    }
+
     doc.save(`Personnel_Report_${personnelSearch || 'Tumu'}.pdf`);
+    setIsExportingPDF(false);
   };
 
   const calculateFilteredTotalDuration = () => {
@@ -985,8 +1593,13 @@ export default function App() {
       {/* Top Header */}
       <header className="bg-forest-dark border-b border-emerald-800 px-6 py-4 flex flex-row justify-between items-center sticky top-0 z-50">
         <div className="flex items-center gap-3 cursor-pointer" onClick={() => setActiveTab('home')}>
-          <div className="w-10 h-10 bg-emerald-500 rounded flex items-center justify-center text-forest-base font-black shadow-lg">
-            B-360
+          <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-emerald-500 shadow-lg bg-forest-base flex items-center justify-center">
+            <img 
+              src="https://cdn.jetphotos.com/full/6/484828_1737509185.jpg" 
+              alt="B-360" 
+              className="w-full h-full object-cover"
+              referrerPolicy="no-referrer"
+            />
           </div>
           <div className="hidden sm:block">
             <h1 className="text-sm font-bold tracking-tight uppercase leading-none">Uçuş Kayıt</h1>
@@ -1036,7 +1649,7 @@ export default function App() {
                 </button>
 
                 <button 
-                  onClick={() => setActiveTab('search')}
+                  onClick={handleOpenKayitlar}
                   className="group bg-forest-dark hover:bg-emerald-900/40 p-8 rounded-3xl shadow-2xl transition-all active:scale-95 flex flex-col items-center gap-4 text-emerald-400 border border-emerald-800"
                 >
                   <div className="w-16 h-16 bg-emerald-500/10 rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform">
@@ -1190,19 +1803,20 @@ export default function App() {
                     </div>
                     <button 
                       onClick={() => {
+                        const cy = new Date().getFullYear();
                         setSearchTerm('');
                         setFilters({
                             pilot: '',
                             bolge: '',
                             tip: '',
-                            startDate: '',
-                            endDate: ''
+                            startDate: `${cy}-01-01`,
+                            endDate: `${cy + 1}-01-01`
                         });
-                    }}
-                    className="w-full bg-forest-base border border-emerald-800 text-emerald-700 hover:text-emerald-500 rounded-lg px-2 py-1 text-[7px] font-black transition-all"
-                  >
-                    FİLTRELERİ TEMİZLE
-                  </button>
+                      }}
+                      className="w-full bg-forest-base border border-emerald-800 text-emerald-700 hover:text-emerald-500 rounded-lg px-2 py-1 text-[7px] font-black transition-all"
+                    >
+                      FİLTRELERİ TEMİZLE
+                    </button>
                 </div>
               </div>
 
@@ -1229,11 +1843,14 @@ export default function App() {
                     <span className="text-blue-400">G: {(filteredLogs.reduce((acc, l) => acc + (Number(l.tk9GorevHektar) || 0), 0)).toLocaleString('tr-TR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>
                   </div>
                 </div>
-                <div className="bg-forest-dark px-4 py-2 rounded-lg border border-emerald-800 flex flex-col min-w-[120px] text-left">
-                  <span className="text-[9px] text-emerald-500/50 uppercase font-black tracking-widest text-left">UYDU / ÇEKİM</span>
-                  <div className="flex flex-col">
-                    <span className="text-sm font-bold text-blue-400 text-left">
-                      {filteredLogs.reduce((acc, l) => acc + (Number(l.uyduDk) || 0), 0).toLocaleString('tr-TR')} <span className="text-[10px]">DK</span>
+                <div className="bg-forest-dark px-4 py-2 rounded-lg border border-emerald-800 flex flex-col min-w-[150px] text-left">
+                  <span className="text-[9px] text-emerald-500/50 uppercase font-black tracking-widest text-left">FİLTRELENMİŞ UYDU / ÇEKİM</span>
+                  <div className="flex flex-col gap-0.5 mt-0.5">
+                    <span className="text-xs font-bold text-blue-400 text-left">
+                      UYDU: {filteredLogs.reduce((acc, l) => acc + parseUyduDkForSum(l.uyduDk), 0).toLocaleString('tr-TR')} <span className="text-[9px] opacity-70">DK</span>
+                    </span>
+                    <span className="text-xs font-bold text-emerald-300 text-left">
+                      ÇEKİM: {filteredLogs.reduce((acc, l) => acc + (Number(l.miktarCekim) || 0), 0).toLocaleString('tr-TR')} <span className="text-[9px] opacity-70">ADET</span>
                     </span>
                   </div>
                 </div>
@@ -1313,16 +1930,18 @@ export default function App() {
                         <td className="px-4 py-4 text-center bg-emerald-900/60 font-mono text-emerald-400 text-xl shadow-inner">
                           {calculateFilteredTotalDuration()}
                         </td>
-                        <td className="px-4 py-4 text-center bg-red-900/20 text-red-500 font-black">
-                           {filteredLogs.reduce((acc, l) => acc + (Number(l.k9YanginHektar) || 0), 0).toLocaleString('tr-TR')}
+                        <td className="px-4 py-4 text-center bg-red-900/20 text-red-500 font-black shadow-inner">
+                           {filteredLogs.reduce((acc, l) => acc + (Number(l.k9YanginHektar) || 0), 0).toLocaleString('tr-TR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
                         </td>
-                        <td className="px-4 py-4 text-center text-emerald-300 font-black">
+                        <td className="px-4 py-4 text-center text-emerald-300 font-black shadow-inner">
                            {filteredLogs.reduce((acc, l) => acc + (Number(l.miktarCekim) || 0), 0).toLocaleString('tr-TR')}
                         </td>
-                        <td className="px-4 py-4 text-center bg-blue-900/20 text-blue-400 font-black">
-                           {filteredLogs.reduce((acc, l) => acc + (Number(l.tk9GorevHektar) || 0), 0).toLocaleString('tr-TR')}
+                        <td className="px-4 py-4 text-center bg-blue-900/20 text-blue-400 font-black shadow-inner">
+                           {filteredLogs.reduce((acc, l) => acc + (Number(l.tk9GorevHektar) || 0), 0).toLocaleString('tr-TR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
                         </td>
-                        <td className="px-4 py-4 text-center bg-forest-dark/50"></td>
+                        <td className="px-4 py-4 text-center bg-emerald-950 text-blue-300 font-black shadow-inner font-mono text-sm leading-none">
+                           {filteredLogs.reduce((acc, l) => acc + parseUyduDkForSum(l.uyduDk), 0).toLocaleString('tr-TR')} <span className="text-[9px] opacity-70">DK</span>
+                        </td>
                         <td className="px-4 py-4"></td>
                       </tr>
                     </tfoot>
@@ -1388,35 +2007,82 @@ export default function App() {
               exit={{ opacity: 0, y: -10 }}
               className="space-y-6"
             >
-              <div className="bg-forest-dark p-6 rounded-2xl border border-emerald-800 shadow-xl flex flex-col md:flex-row justify-between items-center gap-4">
-                <div className="w-full md:w-96">
-                   <label className="text-[10px] text-emerald-400 uppercase font-black mb-1.5 block tracking-widest pl-1">Soyisim / İsim ile Sorgula</label>
-                   <div className="relative">
-                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-700" size={16} />
-                     <input 
-                       type="text" 
-                       placeholder="Aramak istediğiniz personelin soyismini yazın..."
-                       className="w-full bg-forest-base border border-emerald-700 rounded px-4 py-3 pl-10 text-sm focus:outline-none focus:border-emerald-500 transition-all font-medium"
-                       value={personnelSearch}
-                       onChange={(e) => setPersonnelSearch(e.target.value)}
-                     />
-                   </div>
+              <div className="bg-forest-dark p-6 rounded-2xl border border-emerald-800 shadow-xl flex flex-col xl:flex-row justify-between items-stretch gap-4">
+                <div className="flex flex-col md:flex-row gap-4 flex-1 items-stretch">
+                  <div className="flex-1 min-w-[200px]">
+                     <label className="text-[10px] text-emerald-400 uppercase font-black mb-1.5 block tracking-widest pl-1">Soyisim / İsim ile Sorgula</label>
+                     <div className="relative">
+                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-700" size={16} />
+                       <input 
+                         type="text" 
+                         placeholder="Aramak istediğiniz personelin soyismini yazın..."
+                         className="w-full bg-forest-base border border-emerald-700 rounded px-4 py-3 pl-10 text-sm focus:outline-none focus:border-emerald-500 transition-all font-medium text-emerald-100"
+                         value={personnelSearch}
+                         onChange={(e) => setPersonnelSearch(e.target.value)}
+                       />
+                     </div>
+                  </div>
+                  <div className="w-full md:w-44">
+                    <label className="text-[10px] text-emerald-400 uppercase font-black mb-1.5 block tracking-widest pl-1">Başlangıç Tarihi</label>
+                    <input 
+                      type="date"
+                      className="w-full bg-forest-base border border-emerald-700 rounded px-3 py-3 text-xs focus:outline-none focus:border-emerald-500 transition-all text-emerald-100 font-medium"
+                      value={personnelFilters.startDate}
+                      onChange={(e) => setPersonnelFilters(prev => ({ ...prev, startDate: e.target.value }))}
+                    />
+                  </div>
+                  <div className="w-full md:w-44">
+                    <label className="text-[10px] text-emerald-400 uppercase font-black mb-1.5 block tracking-widest pl-1">Bitiş Tarihi</label>
+                    <input 
+                      type="date"
+                      className="w-full bg-forest-base border border-emerald-700 rounded px-3 py-3 text-xs focus:outline-none focus:border-emerald-500 transition-all text-emerald-100 font-medium"
+                      value={personnelFilters.endDate}
+                      onChange={(e) => setPersonnelFilters(prev => ({ ...prev, endDate: e.target.value }))}
+                    />
+                  </div>
+                  <div className="flex items-end">
+                    <button 
+                      onClick={() => {
+                        const cy = new Date().getFullYear();
+                        setPersonnelSearch('');
+                        setPersonnelFilters({
+                          startDate: `${cy}-01-01`,
+                          endDate: `${cy + 1}-01-01`
+                        });
+                      }}
+                      className="h-[46px] w-full md:w-auto px-4 bg-emerald-950/20 hover:bg-emerald-900/40 text-emerald-400 border border-emerald-700 rounded-lg text-[9px] font-black flex items-center justify-center gap-1.5 transition-all text-center uppercase"
+                      title="Filtreleri Sıfırla"
+                    >
+                      SIFIRLA
+                    </button>
+                  </div>
                 </div>
-                <div className="flex gap-2 w-full md:w-auto">
+                
+                <div className="flex gap-2 items-end">
                   <button 
                     onClick={exportPersonnelToPDF}
-                    className="w-full md:w-auto flex items-center justify-center gap-2 px-8 py-3 bg-red-900/40 border border-red-700 rounded-xl text-red-200 font-black text-[10px] hover:bg-red-800 transition-all active:scale-95 shadow-lg"
+                    disabled={isExportingPDF}
+                    className="h-[46px] w-full md:w-auto flex items-center justify-center gap-2 px-6 bg-red-900/40 border border-red-700 rounded-xl text-red-200 font-black text-[10px] hover:bg-red-800 transition-all active:scale-95 disabled:opacity-50 shadow-lg"
                   >
-                    <FileText size={14} />
-                    PDF İNDİR
+                    {isExportingPDF ? (
+                      <>
+                        <div className="w-3.5 h-3.5 border-2 border-red-200 border-t-transparent rounded-full animate-spin"></div>
+                        HAZIRLANIYOR...
+                      </>
+                    ) : (
+                      <>
+                        <FileText size={14} />
+                        PDF İNDİR
+                      </>
+                    )}
                   </button>
                   <button 
                     onClick={fetchExternalData}
                     disabled={isLoading}
-                    className="w-full md:w-auto flex items-center justify-center gap-2 px-8 py-3 bg-emerald-900/40 border border-emerald-700 rounded-xl text-emerald-400 font-black text-[10px] hover:bg-emerald-800 transition-all active:scale-95 disabled:opacity-50"
+                    className="h-[46px] w-full md:w-auto flex items-center justify-center gap-2 px-6 bg-emerald-900/40 border border-emerald-700 rounded-xl text-emerald-400 font-black text-[10px] hover:bg-emerald-800 transition-all active:scale-95 disabled:opacity-50"
                   >
                     <History size={14} className={isLoading ? 'animate-spin' : ''} />
-                    EXCEL VERİLERİNİ GÜNCELLE
+                    EXCEL GÜNCELLE
                   </button>
                 </div>
               </div>
@@ -1440,33 +2106,19 @@ export default function App() {
                 </div>
               )}
 
-              <div className="flex justify-end mb-4">
-                <button 
-                  onClick={() => {
-                    if (confirm('Tüm veriler temizlenecek ve sistem yeniden başlatılacak. Emin misiniz?')) {
-                      localStorage.clear();
-                      window.location.reload();
-                    }
-                  }}
-                  className="bg-red-950/40 hover:bg-red-900/60 text-red-400 border border-red-900/50 px-4 py-2 rounded-lg text-[10px] font-black flex items-center gap-2 transition-all"
-                >
-                  <Trash2 size={14} /> SİSTEM VERİLERİNİ SIFIRLA
-                </button>
-              </div>
-
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                  <PersonnelPanel 
                     title="Uçuş Pilotları" 
-                    data={PILOTS.filter(p => normalize(p).includes(normalize(personnelSearch)))} 
+                    data={pilotsInResults.filter(p => normalize(p).includes(normalize(personnelSearch)))} 
                     type="Pilot" 
-                    logs={logs} 
+                    logs={filteredLogsForPersonnel} 
                     personnelData={personnelData}
                  />
                  <PersonnelPanel 
                     title="Teknik Ekip & Operatörler" 
-                    data={TECHNICIANS.filter(p => normalize(p).includes(normalize(personnelSearch)))} 
+                    data={technicalInResults.filter(p => normalize(p).includes(normalize(personnelSearch)))} 
                     type="Teknisyen" 
-                    logs={logs} 
+                    logs={filteredLogsForPersonnel} 
                     personnelData={personnelData}
                  />
               </div>
@@ -1479,10 +2131,78 @@ export default function App() {
         <div className="flex gap-8 items-center text-[10px] text-emerald-400 font-black uppercase tracking-wider">
           <span className="flex items-center gap-2"><Database size={14} className="opacity-50" /> TOPLAM UÇUŞ: {logs.length}</span>
           <span className="opacity-20">|</span>
-          <span className="flex items-center gap-2"><Clock size={14} className="opacity-50" /> SON KAYIT: {formatDisplayDate(logs[logs.length - 1]?.tarih) || 'N/A'}</span>
+          <span className="flex items-center gap-2">
+            <Clock size={14} className="opacity-50" /> 
+            SON KAYIT: {(() => {
+              if (logs.length === 0) return 'N/A';
+              const maxIdLog = logs.reduce((max, log) => {
+                const maxId = parseInt(max.id) || 0;
+                const logId = parseInt(log.id) || 0;
+                return logId > maxId ? log : max;
+              }, logs[0]);
+              return formatDisplayDate(maxIdLog?.tarih) || 'N/A';
+            })()}
+          </span>
         </div>
-        <p className="text-[10px] opacity-40 font-mono tracking-widest">© 2024 Havacılık Bilgi Sistemleri | Secure B-360 DB</p>
+        <p className="text-[10px] opacity-40 font-mono tracking-widest uppercase">© 2026 Hava Araçları Bakım ve Teknik Şube Müdürlüğü | Secure B-360 DB</p>
       </footer>
+
+      {showPasswordModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-[100] p-4">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 10 }}
+            className="bg-forest-dark border-2 border-emerald-500/30 rounded-3xl p-6 sm:p-8 max-w-sm w-full shadow-[0_0_50px_rgba(16,185,129,0.15)] flex flex-col items-center text-center gap-6"
+          >
+            <div className="w-16 h-16 bg-emerald-500/10 rounded-2xl flex items-center justify-center text-emerald-400 border border-emerald-500/20 shadow-inner">
+              <Lock size={32} />
+            </div>
+            
+            <div>
+              <h3 className="text-xl font-bold tracking-tight text-emerald-100">GÜVENLİK GEÇİDİ</h3>
+              <p className="text-xs text-emerald-400/70 mt-1 uppercase font-semibold tracking-wider">UÇUŞ KAYITLARINI İNCELEMEK İÇİN ŞİFRE GİRİNİZ</p>
+            </div>
+
+            <form onSubmit={handleVerifyPassword} className="w-full flex flex-col gap-4">
+              <div className="flex flex-col gap-1.5 text-left">
+                <input 
+                  type="password"
+                  placeholder="Şifre Girin"
+                  autoFocus
+                  className="w-full bg-forest-base/60 text-center text-xl font-mono tracking-widest text-emerald-100 py-3.5 rounded-xl border border-emerald-800 focus:outline-none focus:border-emerald-500 shadow-inner"
+                  value={passwordInput}
+                  onChange={(e) => {
+                    setPasswordInput(e.target.value);
+                    setPasswordError('');
+                  }}
+                />
+                {passwordError && (
+                  <p className="text-red-400 text-[10px] font-black uppercase tracking-wider text-center mt-1 animate-pulse flex items-center justify-center gap-1">
+                    <AlertCircle size={10} /> {passwordError}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex gap-3 mt-2 w-full">
+                <button 
+                  type="button"
+                  onClick={() => setShowPasswordModal(false)}
+                  className="flex-1 bg-forest-base/50 text-emerald-400 border border-emerald-950 font-bold py-3 rounded-lg text-xs uppercase tracking-wider hover:bg-emerald-950 transition-all"
+                >
+                  İPTAL
+                </button>
+                <button 
+                  type="submit"
+                  className="flex-1 bg-emerald-600 text-white font-black py-3 rounded-lg text-xs uppercase tracking-wider hover:bg-emerald-500 shadow-lg shadow-emerald-600/20 active:scale-95 transition-all"
+                >
+                  ONAYLA
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1515,7 +2235,14 @@ function PersonnelPanel({ title, data, type, logs, personnelData }: { title: str
                      )}
                   </div>
                   <div>
-                    <h3 className="font-bold text-sm tracking-wide uppercase italic leading-tight text-white">{name}</h3>
+                    <h3 className="font-bold text-sm tracking-wide uppercase italic leading-tight text-white">
+                      {name}
+                      {((normalize(name) === 'SERKAN KEBAPCI' || normalize(name) === 'SERKAN KEBABCI') && type === 'Teknisyen') && (
+                        <span className="text-emerald-400 font-bold normal-case text-xs inline-block ml-1 bg-emerald-950/40 px-1.5 py-0.5 border border-emerald-800/60 rounded">
+                          (UÇUŞ TEKNİSYENİ)
+                        </span>
+                      )}
+                    </h3>
                     <p className="text-[9px] text-emerald-500 font-black uppercase tracking-widest mt-0.5">
                       {stats.role} {stats.title ? `| ${stats.title}` : ''}
                     </p>

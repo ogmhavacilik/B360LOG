@@ -64,7 +64,39 @@ function doGet(e) {
         .replace(/[^\w]/g, '');
     };
     
-    const headers = rawHeaders.map(normalizeHeader);
+    const uniqueHeaders = [];
+    const rawUniqueHeaders = [];
+    const headerCounts = {};
+    const rawHeaderCounts = {};
+
+    for (let index = 0; index < rawHeaders.length; index++) {
+      let rawH = rawHeaders[index] ? rawHeaders[index].toString().trim() : '';
+      let norm = normalizeHeader(rawH);
+      if (!norm) {
+        norm = 'col_' + index;
+      }
+      
+      if (headerCounts[norm] !== undefined) {
+        headerCounts[norm]++;
+        uniqueHeaders.push(norm + headerCounts[norm]);
+      } else {
+        headerCounts[norm] = 1;
+        uniqueHeaders.push(norm);
+      }
+
+      if (rawH) {
+        if (rawHeaderCounts[rawH] !== undefined) {
+          rawHeaderCounts[rawH]++;
+          rawUniqueHeaders.push(rawH + ' ' + rawHeaderCounts[rawH]);
+        } else {
+          rawHeaderCounts[rawH] = 1;
+          rawUniqueHeaders.push(rawH);
+        }
+      } else {
+        rawUniqueHeaders.push('Col ' + index);
+      }
+    }
+    
     const jsonData = [];
     
     for (let i = 1; i < data.length; i++) {
@@ -72,9 +104,11 @@ function doGet(e) {
       let hasData = false;
       data[i].forEach((val, index) => {
         if (val !== "" && val !== null) hasData = true;
-        let key = headers[index] || 'col_' + index;
+        obj['col_' + index] = val;
+        let key = uniqueHeaders[index];
+        let rawKey = rawUniqueHeaders[index];
         obj[key] = val;
-        obj[rawHeaders[index]] = val; 
+        obj[rawKey] = val;
       });
       if (hasData) jsonData.push(obj);
     }

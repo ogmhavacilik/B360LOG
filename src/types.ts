@@ -15,7 +15,7 @@ export interface FlightLog {
   k9YanginHektar: number;
   miktarCekim: number;
   tk9GorevHektar: number;
-  uyduDk: number;
+  uyduDk: number | string;
   aciklama: string;
 }
 
@@ -31,17 +31,17 @@ export const PILOTS = [
   'ALTAN ALKAN SÖZEN',
   'CENGİZ ÖZDEMİR',
   'DEVRİM FERHAT ÇALIŞKAN',
-  'YILMAZ MAMUNLUOĞLU',
-  'AYDEMİR TEZGEL',
-  'SERKAN KEBAPCI'
+  'SERKAN KEBABCI',
+  'AYDEMİR TEZGEL'
 ];
 
 export const TECHNICIANS = [
-  'AYCAN TAN',
-  'FERHAT ÖZCAN',
+  'TEZCAN GÜZER',
+  'SERKAN KEBAPCI',
   'HASAN AKSOY',
+  'FERHAT ÖZCAN',
   'ÖMER ERSOY',
-  'TEZCAN GÜZER'
+  'AYCAN TAN'
 ];
 
 export const GOREV_TIPLERI = [
