@@ -27,6 +27,7 @@ export interface Personnel {
 }
 
 export const PILOTS = [
+  'YILMAZ MAMUNLUOĞLU',
   'AYDIN TÜTÜNCÜOĞLU',
   'ALTAN ALKAN SÖZEN',
   'CENGİZ ÖZDEMİR',

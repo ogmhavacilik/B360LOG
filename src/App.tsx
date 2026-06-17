@@ -30,7 +30,6 @@ import 'jspdf-autotable';
 import { motion, AnimatePresence } from 'motion/react';
 import XLSX from 'xlsx-js-style';
 import { FlightLog, PILOTS, TECHNICIANS, GOREV_TIPLERI } from './types';
-import { STATIC_PERSON_LIST } from './staticPersonnel';
 
 // Google Apps Script URLs
 const GAS_URL = 'https://script.google.com/macros/s/AKfycbwpqbW9sHqUZIUwGf4naJN_ZH0aCXvGEYSdqBN6mftyFVZGAofjrnMPfutcO5maBc4/exec';
@@ -385,12 +384,20 @@ export default function App() {
   const [logs, setLogs] = useState<FlightLog[]>([]);
   const [personnelData, setPersonnelData] = useState<Record<string, PersonData>>(() => {
     const initial: Record<string, PersonData> = {};
-    STATIC_PERSON_LIST.forEach(p => {
-      initial[normalize(p.fullName)] = {
-        fullName: p.fullName,
-        photoUrl: getDriveThumbnail(p.photoUrl),
-        role: p.role,
-        title: p.title
+    PILOTS.forEach(name => {
+      initial[normalize(name)] = {
+        fullName: name,
+        photoUrl: '',
+        role: 'Pilot',
+        title: 'B-360 PİLOT'
+      };
+    });
+    TECHNICIANS.forEach(name => {
+      initial[normalize(name)] = {
+        fullName: name,
+        photoUrl: '',
+        role: 'Teknisyen',
+        title: 'B-360 TEKNİSYEN'
       };
     });
     return initial;
@@ -1254,6 +1261,14 @@ export default function App() {
       .filter(p => p && normalize(p).includes(normalize(personnelSearch)))
       .sort();
     const filteredTechnical = technicalInResults
+      .filter(p => {
+        const isSerkan = p === 'SERKAN KEBAPCI' || p === 'SERKAN KEBABCI';
+        if (isSerkan) {
+          const isBeforeJan2026 = personnelFilters.startDate && personnelFilters.startDate < '2026-01-01';
+          return !!isBeforeJan2026;
+        }
+        return true;
+      })
       .filter(p => p && normalize(p).includes(normalize(personnelSearch)))
       .sort();
 
@@ -2116,7 +2131,16 @@ export default function App() {
                  />
                  <PersonnelPanel 
                     title="Teknik Ekip & Operatörler" 
-                    data={technicalInResults.filter(p => normalize(p).includes(normalize(personnelSearch)))} 
+                    data={technicalInResults
+                      .filter(p => {
+                        const isSerkan = p === 'SERKAN KEBAPCI' || p === 'SERKAN KEBABCI';
+                        if (isSerkan) {
+                          const isBeforeJan2026 = personnelFilters.startDate && personnelFilters.startDate < '2026-01-01';
+                          return !!isBeforeJan2026;
+                        }
+                        return true;
+                      })
+                      .filter(p => normalize(p).includes(normalize(personnelSearch)))} 
                     type="Teknisyen" 
                     logs={filteredLogsForPersonnel} 
                     personnelData={personnelData}
@@ -2367,10 +2391,6 @@ function FlightForm({ onSubmit, isSubmitting, personnelData }: {
     if (step === 2) {
       if (!formData.kaptanPilot || !formData.ikinciPilot) {
         alert('Pilotlar (Kaptan ve 2. Pilot) zorunludur.');
-        return;
-      }
-      if (!formData.teknisyen1 || !formData.operator1) {
-        alert('Teknik ekipte Teknisyen 1 ve Operatör 1 zorunludur.');
         return;
       }
     }
