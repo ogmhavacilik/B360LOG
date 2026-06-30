@@ -59,5 +59,6 @@ export const GOREV_TIPLERI = [
   'Kamera Testi',
   'İntikal Uçuşu',
   'Dogal Afet',
-  'Yer Calistirmasi'
+  'Yer Calistirmasi',
+  'YANGIN KEŞİF'
 ];

@@ -913,6 +913,77 @@ export default function App() {
     }
   };
 
+  const [editingLog, setEditingLog] = useState<FlightLog | null>(null);
+
+  const deleteLog = async (id: string) => {
+    if (!window.confirm(`Sıra No ${id} olan kaydı silmek istediğinizden emin misiniz?`)) {
+      return;
+    }
+    
+    setIsLoading(true);
+    const previousLogs = [...logs];
+    setLogs(prev => prev.filter(l => l.id !== id));
+    
+    try {
+      await fetch(GAS_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {
+          'Content-Type': 'text/plain',
+        },
+        body: JSON.stringify({
+          action: 'delete',
+          ids: [id]
+        }),
+      });
+      alert('Kayıt başarıyla silindi (E-tablo ile senkronize edildi).');
+    } catch (e) {
+      console.error('Delete sync failed', e);
+      setLogs(previousLogs);
+      alert('HATA: Kayıt e-tablodan silinemedi. Lütfen internetinizi ve script ayarlarını kontrol edin.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const updateLog = async (id: string, updatedFields: Omit<FlightLog, 'id' | 'ucusSuresi'>) => {
+    setIsSubmitting(true);
+    
+    const ucusSuresi = calculateDuration(updatedFields.kalkis, updatedFields.inis);
+    const updatedLog: FlightLog = {
+      ...updatedFields,
+      k9YanginHektar: updatedFields.gorevTipi === 'Yangın Uçuşu' ? updatedFields.k9YanginHektar : 0,
+      id: id,
+      ucusSuresi: ucusSuresi
+    };
+
+    const previousLogs = [...logs];
+    setLogs(prev => prev.map(l => l.id === id ? updatedLog : l));
+
+    try {
+      await fetch(GAS_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {
+          'Content-Type': 'text/plain',
+        },
+        body: JSON.stringify({
+          action: 'update',
+          id: id,
+          data: updatedLog
+        }),
+      });
+      alert('Kayıt başarıyla güncellendi (E-tablo ile senkronize edildi).');
+      setEditingLog(null);
+    } catch (e) {
+      console.error('Update sync failed', e);
+      setLogs(previousLogs);
+      alert('HATA: Kayıt güncellenemedi. Lütfen internetinizi ve script ayarlarını kontrol edin.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const filteredLogs = useMemo(() => {
     return logs.filter(log => {
       const s = searchTerm.toLowerCase().trim();
@@ -1873,7 +1944,7 @@ export default function App() {
 
               <div className="border border-emerald-800 rounded-lg overflow-hidden flex flex-col bg-forest-dark shadow-2xl">
                 <div className="overflow-x-auto">
-                  <table className="w-full border-collapse text-left min-w-[2800px] table-fixed">
+                  <table className="w-full border-collapse text-left min-w-[3000px] table-fixed">
                     <thead>
                         <tr className="bg-forest-base text-emerald-400 text-[11px] uppercase tracking-widest border-b border-emerald-700">
                           <th className="w-20 px-4 py-5 font-black sticky left-0 z-20 bg-forest-base border-r border-emerald-800 shadow-[2px_0_5px_rgba(0,0,0,0.3)]">Sıra No (A)</th>
@@ -1894,6 +1965,7 @@ export default function App() {
                           <th className="w-32 px-4 py-5 font-black text-center text-blue-400">TK-9 gorev(Hektar) (P)</th>
                           <th className="w-32 px-4 py-5 font-black text-center opacity-70">Uydu (Dk) (Q)</th>
                           <th className="w-80 px-4 py-5 font-black">AÇIKLAMA (R)</th>
+                          <th className="w-56 px-4 py-5 font-black text-center text-orange-400">İŞLEMLER</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-emerald-800/40">
@@ -1935,6 +2007,22 @@ export default function App() {
                           <td className="px-4 py-4 opacity-70 italic leading-relaxed text-[10px] truncate max-w-xs" title={log.aciklama}>
                              {log.aciklama}
                           </td>
+                          <td className="px-4 py-4 text-center whitespace-nowrap border-l border-emerald-800/30 bg-emerald-950/20">
+                            <div className="flex justify-center gap-2">
+                              <button
+                                onClick={() => setEditingLog(log)}
+                                className="px-2.5 py-1.5 bg-blue-600/80 hover:bg-blue-500 hover:text-white border border-blue-500/30 text-emerald-100 text-[10px] font-black rounded flex items-center gap-1 transition-all active:scale-95 shadow-md shadow-blue-950/50"
+                              >
+                                DÜZENLE
+                              </button>
+                              <button
+                                onClick={() => deleteLog(log.id)}
+                                className="px-2.5 py-1.5 bg-red-600/80 hover:bg-red-500 hover:text-white border border-red-500/30 text-emerald-100 text-[10px] font-black rounded flex items-center gap-1 transition-all active:scale-95 shadow-md shadow-red-950/50"
+                              >
+                                SİL
+                              </button>
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -1957,6 +2045,7 @@ export default function App() {
                         <td className="px-4 py-4 text-center bg-emerald-950 text-blue-300 font-black shadow-inner font-mono text-sm leading-none">
                            {filteredLogs.reduce((acc, l) => acc + parseUyduDkForSum(l.uyduDk), 0).toLocaleString('tr-TR')} <span className="text-[9px] opacity-70">DK</span>
                         </td>
+                        <td className="px-4 py-4"></td>
                         <td className="px-4 py-4"></td>
                       </tr>
                     </tfoot>
@@ -2227,6 +2316,334 @@ export default function App() {
           </motion.div>
         </div>
       )}
+
+      {editingLog && (
+        <EditLogModal 
+          log={editingLog} 
+          onClose={() => setEditingLog(null)} 
+          onSave={updateLog}
+          isSubmitting={isSubmitting}
+          personnelData={personnelData}
+        />
+      )}
+    </div>
+  );
+}
+
+function EditLogModal({ log, onClose, onSave, isSubmitting, personnelData }: {
+  log: FlightLog;
+  onClose: () => void;
+  onSave: (id: string, updatedFields: Omit<FlightLog, 'id' | 'ucusSuresi'>) => Promise<void>;
+  isSubmitting: boolean;
+  personnelData: Record<string, PersonData>;
+}) {
+  const [formData, setFormData] = useState<Omit<FlightLog, 'id' | 'ucusSuresi'>>({
+    tarih: log.tarih || '',
+    kaptanPilot: log.kaptanPilot || '',
+    ikinciPilot: log.ikinciPilot || '',
+    teknisyen1: log.teknisyen1 || '',
+    operator1: log.operator1 || '',
+    teknisyen2: log.teknisyen2 || '',
+    operator2: log.operator2 || '',
+    gorevTipi: log.gorevTipi || '',
+    gorevBolgesi: log.gorevBolgesi || '',
+    kalkis: log.kalkis || '',
+    inis: log.inis || '',
+    k9YanginHektar: Number(log.k9YanginHektar) || 0,
+    miktarCekim: Number(log.miktarCekim) || 0,
+    tk9GorevHektar: Number(log.tk9GorevHektar) || 0,
+    uyduDk: Number(log.uyduDk) || 0,
+    aciklama: log.aciklama || ''
+  });
+
+  const pilotOptions = Array.from(new Set([
+    ...PILOTS, 
+    ...Object.values(personnelData).filter(p => !p.role || p.role.includes('Pilot') || p.role.includes('Kaptan')).map(p => p.fullName)
+  ])).sort((a, b) => getSurname(a).localeCompare(getSurname(b)));
+
+  const technicalOptions = Array.from(new Set([
+    ...TECHNICIANS, 
+    ...Object.values(personnelData).filter(p => !p.role || (!p.role.includes('Pilot') && !p.role.includes('Kaptan'))).map(p => p.fullName)
+  ])).sort((a, b) => getSurname(a).localeCompare(getSurname(b)));
+
+  const labelStyle = "text-[9px] text-emerald-400 uppercase font-black mb-1 block tracking-widest pl-1 text-left";
+  const inputStyle = "w-full bg-forest-base border border-emerald-800 rounded px-3 py-2 text-xs text-emerald-50 focus:outline-none focus:border-emerald-500 placeholder:opacity-25 transition-all font-medium text-left";
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formData.tarih || !formData.gorevTipi) {
+      alert('Tarih ve Görev Tipi alanları zorunludur.');
+      return;
+    }
+    if (!formData.kaptanPilot || !formData.ikinciPilot) {
+      alert('Pilotlar (Kaptan ve 2. Pilot) zorunludur.');
+      return;
+    }
+    if (!formData.kalkis || !formData.inis) {
+      alert('Kalkış ve İniş saatleri zorunludur.');
+      return;
+    }
+    onSave(log.id, formData);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-[100] p-4 overflow-y-auto">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95, y: 15 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 15 }}
+        className="bg-forest-dark border-2 border-emerald-500/30 rounded-3xl p-6 md:p-8 max-w-4xl w-full shadow-[0_0_50px_rgba(16,185,129,0.15)] flex flex-col gap-6 max-h-[90vh] overflow-y-auto"
+      >
+        <div className="flex justify-between items-center border-b border-emerald-800/60 pb-4">
+          <div className="text-left">
+            <h3 className="text-lg font-black tracking-tight text-emerald-100 flex items-center gap-2">
+              <span className="bg-emerald-950 px-2 py-0.5 rounded text-emerald-400 text-xs border border-emerald-700 font-mono">
+                SIRA NO: {log.id}
+              </span> 
+              KAYIT GÜNCELLEME
+            </h3>
+            <p className="text-[9px] text-emerald-400/60 uppercase font-bold tracking-wider mt-1">E-Tablo verisiyle gerçek zamanlı senkronize olur.</p>
+          </div>
+          <button 
+            type="button" 
+            onClick={onClose}
+            className="text-emerald-500 hover:text-emerald-300 font-black text-sm p-1"
+          >
+            KAPAT
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="flex flex-col gap-6">
+          {/* Section 1: Genel Bilgiler */}
+          <div>
+            <h4 className="text-[10px] text-emerald-500 font-extrabold uppercase tracking-[0.2em] mb-3 pb-1 border-b border-emerald-800/30 text-left font-sans">
+              GENEL BİLGİLER
+            </h4>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="text-left">
+                <label className={labelStyle}>Tarih</label>
+                <input 
+                  type="date" 
+                  value={formData.tarih} 
+                  onChange={e => setFormData({ ...formData, tarih: e.target.value })}
+                  className={inputStyle} 
+                />
+              </div>
+              <div className="text-left">
+                <label className={labelStyle}>Görev Tipi</label>
+                <select 
+                  value={formData.gorevTipi} 
+                  onChange={e => setFormData({ ...formData, gorevTipi: e.target.value })}
+                  className={inputStyle}
+                >
+                  <option value="">Görev Tipi Seçiniz</option>
+                  {GOREV_TIPLERI.map(t => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="text-left">
+                <label className={labelStyle}>Görev Bölgesi</label>
+                <input 
+                  type="text" 
+                  placeholder="Bölge giriniz (örn: Muğla)" 
+                  value={formData.gorevBolgesi} 
+                  onChange={e => setFormData({ ...formData, gorevBolgesi: e.target.value })}
+                  className={inputStyle} 
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Section 2: Uçuş Ekibi */}
+          <div>
+            <h4 className="text-[10px] text-emerald-500 font-extrabold uppercase tracking-[0.2em] mb-3 pb-1 border-b border-emerald-800/30 text-left font-sans">
+              UÇUŞ EKİBİ
+            </h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="text-left">
+                <label className={labelStyle}>Kaptan Pilot</label>
+                <select 
+                  value={formData.kaptanPilot} 
+                  onChange={e => setFormData({ ...formData, kaptanPilot: e.target.value })}
+                  className={inputStyle}
+                >
+                  <option value="">Kaptan Seçiniz</option>
+                  {pilotOptions.map(p => (
+                    <option key={p} value={p}>{p}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="text-left">
+                <label className={labelStyle}>2. Pilot</label>
+                <select 
+                  value={formData.ikinciPilot} 
+                  onChange={e => setFormData({ ...formData, ikinciPilot: e.target.value })}
+                  className={inputStyle}
+                >
+                  <option value="">2. Pilot Seçiniz</option>
+                  {pilotOptions.map(p => (
+                    <option key={p} value={p}>{p}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="text-left">
+                <label className={labelStyle}>Teknisyen 1 (E)</label>
+                <select 
+                  value={formData.teknisyen1} 
+                  onChange={e => setFormData({ ...formData, teknisyen1: e.target.value })}
+                  className={inputStyle}
+                >
+                  <option value="">Seçiniz</option>
+                  {technicalOptions.map(t => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="text-left">
+                <label className={labelStyle}>Operatör 1 (F)</label>
+                <select 
+                  value={formData.operator1} 
+                  onChange={e => setFormData({ ...formData, operator1: e.target.value })}
+                  className={inputStyle}
+                >
+                  <option value="">Seçiniz</option>
+                  {technicalOptions.map(t => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="text-left">
+                <label className={labelStyle}>Teknisyen 2 (G)</label>
+                <select 
+                  value={formData.teknisyen2} 
+                  onChange={e => setFormData({ ...formData, teknisyen2: e.target.value })}
+                  className={inputStyle}
+                >
+                  <option value="">Seçiniz (İsteğe Bağlı)</option>
+                  {technicalOptions.map(t => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="text-left">
+                <label className={labelStyle}>Operatör 2 (H)</label>
+                <select 
+                  value={formData.operator2} 
+                  onChange={e => setFormData({ ...formData, operator2: e.target.value })}
+                  className={inputStyle}
+                >
+                  <option value="">Seçiniz (İsteğe Bağlı)</option>
+                  {technicalOptions.map(t => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 3: Uçuş Detayları */}
+          <div>
+            <h4 className="text-[10px] text-emerald-500 font-extrabold uppercase tracking-[0.2em] mb-3 pb-1 border-b border-emerald-800/30 text-left font-sans">
+              UÇUŞ DETAYLARI
+            </h4>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="text-left">
+                <label className={labelStyle}>Kalkış</label>
+                <input 
+                  type="time" 
+                  value={formData.kalkis} 
+                  onChange={e => setFormData({ ...formData, kalkis: e.target.value })}
+                  className={inputStyle} 
+                />
+              </div>
+              <div className="text-left">
+                <label className={labelStyle}>İniş</label>
+                <input 
+                  type="time" 
+                  value={formData.inis} 
+                  onChange={e => setFormData({ ...formData, inis: e.target.value })}
+                  className={inputStyle} 
+                />
+              </div>
+              <div className="text-left">
+                <label className={labelStyle}>Uçuş Süresi (M)</label>
+                <div className="w-full bg-forest-base/40 border border-emerald-800/50 rounded px-3 py-2 text-xs text-emerald-300 font-mono font-bold select-none h-[34px] flex items-center justify-center">
+                  {formData.kalkis && formData.inis ? calculateDuration(formData.kalkis, formData.inis) : '00:00'}
+                </div>
+              </div>
+              <div className="text-left">
+                <label className={labelStyle}>Uydu (Dk) (Q)</label>
+                <input 
+                  type="number" 
+                  value={formData.uyduDk} 
+                  onChange={e => setFormData({ ...formData, uyduDk: Number(e.target.value) || 0 })}
+                  className={inputStyle} 
+                />
+              </div>
+              <div className="text-left">
+                <label className={labelStyle}>K9 Yangın (Hektar) (N)</label>
+                <input 
+                  type="number" 
+                  step="0.1"
+                  value={formData.k9YanginHektar} 
+                  onChange={e => setFormData({ ...formData, k9YanginHektar: Number(e.target.value) || 0 })}
+                  disabled={formData.gorevTipi !== 'Yangın Uçuşu'}
+                  className={`${inputStyle} disabled:opacity-30`} 
+                />
+              </div>
+              <div className="text-left">
+                <label className={labelStyle}>Miktar (Çekim) (O)</label>
+                <input 
+                  type="number" 
+                  value={formData.miktarCekim} 
+                  onChange={e => setFormData({ ...formData, miktarCekim: Number(e.target.value) || 0 })}
+                  className={inputStyle} 
+                />
+              </div>
+              <div className="text-left col-span-2">
+                <label className={labelStyle}>TK9 Görev Hektar (P)</label>
+                <input 
+                  type="number" 
+                  step="0.1"
+                  value={formData.tk9GorevHektar} 
+                  onChange={e => setFormData({ ...formData, tk9GorevHektar: Number(e.target.value) || 0 })}
+                  className={inputStyle} 
+                />
+              </div>
+            </div>
+            
+            <div className="text-left mt-4">
+              <label className={labelStyle}>Açıklama (R)</label>
+              <textarea 
+                rows={2}
+                placeholder="Açıklama giriniz..."
+                value={formData.aciklama} 
+                onChange={e => setFormData({ ...formData, aciklama: e.target.value })}
+                className={`${inputStyle} resize-none`} 
+              />
+            </div>
+          </div>
+
+          {/* Form Actions */}
+          <div className="flex gap-4 border-t border-emerald-800/40 pt-6">
+            <button 
+              type="button" 
+              onClick={onClose}
+              className="flex-1 bg-forest-base border border-emerald-950 text-emerald-400 font-bold py-3.5 rounded-xl text-xs uppercase tracking-wider hover:bg-emerald-950/60 transition-all text-center"
+            >
+              Vazgeç
+            </button>
+            <button 
+              type="submit" 
+              disabled={isSubmitting}
+              className="flex-1 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white font-black py-3.5 rounded-xl text-xs uppercase tracking-wider hover:from-emerald-500 hover:to-emerald-600 shadow-lg shadow-emerald-900/40 active:scale-95 transition-all disabled:opacity-50 text-center"
+            >
+              {isSubmitting ? 'Güncelleniyor...' : 'Değişiklikleri Kaydet'}
+            </button>
+          </div>
+        </form>
+      </motion.div>
     </div>
   );
 }
