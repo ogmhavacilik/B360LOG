@@ -495,8 +495,11 @@ export default function App() {
   const fetchPersonnelInfo = async () => {
     try {
       const getData = async (url: string) => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3500); // 3.5 seconds fast timeout per URL
         try {
-          const r = await fetch(url);
+          const r = await fetch(url, { signal: controller.signal });
+          clearTimeout(timeoutId);
           if (!r.ok) return null;
           const txt = await r.text();
           try {
@@ -506,6 +509,7 @@ export default function App() {
             return jsonMatch ? JSON.parse(jsonMatch[0]) : null;
           }
         } catch (e) {
+          clearTimeout(timeoutId);
           return null;
         }
       };
@@ -597,12 +601,30 @@ export default function App() {
   const fetchExternalData = async () => {
     setIsLoading(true);
     setSyncError(null);
+    
+    // Set a timeout of 5.5 seconds for direct JSON fetch
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5500);
+    
     try {
-      // Step 1: Try to fetch the master sheet as raw Excel Binary (.xlsx)
-      // This is 100% immune to duplicate column headers (like Teknisyen / Operator)
-      // because it parses the raw grid values by exact cell index, not object keys.
+      // Step 1: Direct fast JSON fetch from GAS_URL (very lightweight, immune to duplicate headers via col_x index)
+      const response = await fetch(GAS_URL, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) throw new Error(`HTTP Hata: ${response.status}`);
+      
+      const data = await response.json();
+      processImportedData(data);
+    } catch (e: any) {
+      clearTimeout(timeoutId);
+      console.warn('Direct JSON fetch failed or timed out, trying Excel fallback...', e);
+      
+      // Fallback: If direct fetch failed or timed out, try the excel download but with a quick timeout too
+      const fallbackController = new AbortController();
+      const fallbackTimeoutId = setTimeout(() => fallbackController.abort(), 4500);
       try {
-        const response = await fetch(`${GAS_URL}?action=download&gid=1476570479`);
+        const response = await fetch(`${GAS_URL}?action=download&gid=1476570479`, { signal: fallbackController.signal });
+        clearTimeout(fallbackTimeoutId);
         if (response.ok) {
           const result = await response.json();
           if (result && result.status === 'success' && result.base64) {
@@ -612,36 +634,24 @@ export default function App() {
               byteNumbers[i] = byteCharacters.charCodeAt(i);
             }
             const byteArray = new Uint8Array(byteNumbers);
-            
-            // Read workbook via SheetJS
             const workbook = XLSX.read(byteArray, { type: 'array' });
             const firstSheetName = workbook.SheetNames[0];
             const worksheet = workbook.Sheets[firstSheetName];
-            
-            // Convert worksheet to an Array of Arrays (AOA) with headers intact
             const rawAOA = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-            
             if (rawAOA && Array.isArray(rawAOA) && rawAOA.length > 0) {
               processImportedData(rawAOA);
               setIsLoading(false);
-              return; // Successfully processed raw grid with zero key collision!
+              return;
             }
           }
         }
       } catch (excelError) {
-        console.warn('Failed to fetch Excel binary, falling back to JSON get:', excelError);
+        clearTimeout(fallbackTimeoutId);
+        console.error('Fallback Excel fetch also failed:', excelError);
       }
-
-      // Step 2: Fallback to standard doGet JSON response if Excel gets blocked or fails
-      const url = GAS_URL;
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
       
-      const data = await response.json();
-      processImportedData(data);
-    } catch (e) {
-      console.error('Veri çekme hatası:', e);
-      setSyncError('BAĞLANTI HATASI: Google Apps Script "Herkes" erişimine açık olmayabilir veya tarayıcı erişimi engelliyor. Lütfen sayfayı yenileyip tekrar deneyin.');
+      // Handle fallback gracefully and inform user about mobile operator blocks
+      setSyncError('BAĞLANTI UYARISI: Bazı mobil operatörlerde (Turkcell, Vodafone "Güvenli İnternet") Google servislerine erişim kısıtlı olabilir. Mevcut yerel verileriniz yüklendi, uygulamayı kullanmaya devam edebilirsiniz.');
     } finally {
       setIsLoading(false);
     }
