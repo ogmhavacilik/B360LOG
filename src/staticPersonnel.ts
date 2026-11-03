@@ -53,6 +53,13 @@ export const STATIC_PERSON_LIST: StaticPerson[] = [
 
   // —— PİLOTLAR ——
   {
+    fullName: "YILMAZ MAMUNLUOĞLU",
+    role: "Pilot",
+    title: "B-360 PİLOT",
+    location: "ANKARA",
+    photoUrl: ""
+  },
+  {
     fullName: "AYDIN TÜTÜNCÜOĞLU",
     role: "Pilot",
     title: "B-360 PİLOT",

@@ -23,7 +23,11 @@ import {
   CheckCircle2,
   FileText,
   Trash2,
-  Lock
+  Lock,
+  Edit,
+  Copy,
+  Check,
+  FileCode
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
@@ -32,7 +36,7 @@ import XLSX from 'xlsx-js-style';
 import { FlightLog, PILOTS, TECHNICIANS, GOREV_TIPLERI } from './types';
 
 // Google Apps Script URLs
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbwpqbW9sHqUZIUwGf4naJN_ZH0aCXvGEYSdqBN6mftyFVZGAofjrnMPfutcO5maBc4/exec';
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbwUHTSTMzkDD7Gn9_sPC9Lf-fUAvcMVyk3AlJm2OfwOjaR2uSyEcXZckH5Apn1f6FOT/exec';
 const PILOT_DATA_URL = 'https://script.google.com/macros/s/AKfycbx5jJmZ6sU8qpSwCFwp41z_7fJYy-buB4BD5686jAoM3xqVw39m3q3iDbkVbQCDUZ5U/exec';
 const TECH_DATA_URL = 'https://script.google.com/macros/s/AKfycbwcRIUfG0WfyEb5aWiJnpiNTvbo5XGz_WcetUlkoQGmZuTTBxvdsvsV2HQRPq8ewqEy/exec';
 const PERSONNEL_SHEET_URL = 'https://script.google.com/macros/s/AKfycbytVmnCY7Spjg-Rges0k-BgEJqZSM8iNJoXu0UHuKFeubm4vlSzemzzVec4UgUQ96Q7/exec';
@@ -407,6 +411,8 @@ export default function App() {
   const [isSuccess, setIsSuccess] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [showCodeModal, setShowCodeModal] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [isPasswordVerified, setIsPasswordVerified] = useState(false);
@@ -496,7 +502,7 @@ export default function App() {
     try {
       const getData = async (url: string) => {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3500); // 3.5 seconds fast timeout per URL
+        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 seconds timeout per URL
         try {
           const r = await fetch(url, { signal: controller.signal });
           clearTimeout(timeoutId);
@@ -602,59 +608,59 @@ export default function App() {
     setIsLoading(true);
     setSyncError(null);
     
-    // Set a timeout of 5.5 seconds for direct JSON fetch
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5500);
-    
+    let loadedSuccessfully = false;
+
+    // Yöntem 1: Doğrudan Excel Binary İndirme (Tüm 543 satırı ve Teknisyen 1/2, Operatör 1/2 sütunlarını kayıpsız yükler)
     try {
-      // Step 1: Direct fast JSON fetch from GAS_URL (very lightweight, immune to duplicate headers via col_x index)
-      const response = await fetch(GAS_URL, { signal: controller.signal });
-      clearTimeout(timeoutId);
+      const dlController = new AbortController();
+      const dlTimeoutId = setTimeout(() => dlController.abort(), 8000);
+      const dlResponse = await fetch(`${GAS_URL}?action=download&gid=1476570479`, { signal: dlController.signal });
+      clearTimeout(dlTimeoutId);
       
-      if (!response.ok) throw new Error(`HTTP Hata: ${response.status}`);
-      
-      const data = await response.json();
-      processImportedData(data);
-    } catch (e: any) {
-      clearTimeout(timeoutId);
-      console.warn('Direct JSON fetch failed or timed out, trying Excel fallback...', e);
-      
-      // Fallback: If direct fetch failed or timed out, try the excel download but with a quick timeout too
-      const fallbackController = new AbortController();
-      const fallbackTimeoutId = setTimeout(() => fallbackController.abort(), 4500);
-      try {
-        const response = await fetch(`${GAS_URL}?action=download&gid=1476570479`, { signal: fallbackController.signal });
-        clearTimeout(fallbackTimeoutId);
-        if (response.ok) {
-          const result = await response.json();
-          if (result && result.status === 'success' && result.base64) {
-            const byteCharacters = atob(result.base64);
-            const byteNumbers = new Array(byteCharacters.length);
-            for (let i = 0; i < byteCharacters.length; i++) {
-              byteNumbers[i] = byteCharacters.charCodeAt(i);
-            }
-            const byteArray = new Uint8Array(byteNumbers);
-            const workbook = XLSX.read(byteArray, { type: 'array' });
-            const firstSheetName = workbook.SheetNames[0];
-            const worksheet = workbook.Sheets[firstSheetName];
-            const rawAOA = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-            if (rawAOA && Array.isArray(rawAOA) && rawAOA.length > 0) {
-              processImportedData(rawAOA);
-              setIsLoading(false);
-              return;
-            }
+      if (dlResponse.ok) {
+        const result = await dlResponse.json();
+        if (result && result.status === 'success' && result.base64) {
+          const byteCharacters = atob(result.base64);
+          const byteNumbers = new Array(byteCharacters.length);
+          for (let i = 0; i < byteCharacters.length; i++) {
+            byteNumbers[i] = byteCharacters.charCodeAt(i);
+          }
+          const byteArray = new Uint8Array(byteNumbers);
+          const workbook = XLSX.read(byteArray, { type: 'array' });
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          const rawAOA = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+          if (rawAOA && Array.isArray(rawAOA) && rawAOA.length > 0) {
+            processImportedData(rawAOA);
+            loadedSuccessfully = true;
           }
         }
-      } catch (excelError) {
-        clearTimeout(fallbackTimeoutId);
-        console.error('Fallback Excel fetch also failed:', excelError);
       }
-      
-      // Handle fallback gracefully and inform user about mobile operator blocks
-      setSyncError('BAĞLANTI UYARISI: Bazı mobil operatörlerde (Turkcell, Vodafone "Güvenli İnternet") Google servislerine erişim kısıtlı olabilir. Mevcut yerel verileriniz yüklendi, uygulamayı kullanmaya devam edebilirsiniz.');
-    } finally {
-      setIsLoading(false);
+    } catch (excelErr) {
+      console.warn('Excel indirme başarısız, alternatif JSON akışına geçiliyor:', excelErr);
     }
+
+    // Yöntem 2: Hızlı JSON Akışı (Mobil operatör kısıtlaması veya yavaş bağlantı durumunda)
+    if (!loadedSuccessfully) {
+      try {
+        const jsonController = new AbortController();
+        const jsonTimeoutId = setTimeout(() => jsonController.abort(), 6000);
+        const jsonResponse = await fetch(GAS_URL, { signal: jsonController.signal });
+        clearTimeout(jsonTimeoutId);
+        if (jsonResponse.ok) {
+          const data = await jsonResponse.json();
+          processImportedData(data);
+          loadedSuccessfully = true;
+        }
+      } catch (jsonErr) {
+        console.warn('Doğrudan JSON akışı da başarısız:', jsonErr);
+      }
+    }
+
+    if (!loadedSuccessfully) {
+      setSyncError('BAĞLANTI BİLGİSİ: Bazı operatörlerde (Turkcell, Vodafone "Güvenli İnternet") kısıtlama olabilir. Mevcut yerel verileriniz aktiftir.');
+    }
+    setIsLoading(false);
   };
 
   const processImportedData = (data: any, append: boolean = false) => {
@@ -772,16 +778,34 @@ export default function App() {
           const rawTarih = val(['Tarih', 'tarih'], 1);
           const historyTarih = parseExcelDate(rawTarih);
 
+          let t1 = (val(['teknisyen1', 'Teknisyen 1', 'Teknisyen', 'teknisyen'], 4) || '').toString().trim();
+          let o1 = (val(['operator1', 'Operator 1', 'Operator', 'operator', 'operatör', 'Operatör'], 5) || '').toString().trim();
+          let t2 = (val(['teknisyen2', 'Teknisyen 2'], 6) || '').toString().trim();
+          let o2 = (val(['operator2', 'Operator 2', 'Operatör 2'], 7) || '').toString().trim();
+
+          // Fallback if direct JSON was used and duplicate headers collided
+          if (!t1 && !isAOA && l && typeof l === 'object') {
+            const col57 = (l['col_57'] || '').toString().trim();
+            const col58 = (l['col_58'] || '').toString().trim();
+            if (col57 && col57 !== 'Kaptan Pilot' && col57 !== 'Uçuş Teknisyeni') {
+              t1 = col57;
+            }
+            if (col58 && col58 !== '2. Pilot' && col58 !== 'Operator') {
+              if (!o1) o1 = col58;
+              else if (!t2) t2 = col58;
+            }
+          }
+
           // 1:1 direct column mapping from Excel to FlightLog attributes without changing any text
           const cleaned: FlightLog = {
             id: idRaw,
             tarih: historyTarih,
             kaptanPilot: (val(['Kaptan Pilot', 'kaptanPilot'], 2) || '').toString().trim(),
             ikinciPilot: (val(['2. Pilot', 'ikinciPilot'], 3) || '').toString().trim(),
-            teknisyen1: (val(['Teknisyen 1', 'teknisyen1', 'teknisyen', 'Teknisyen'], 4) || '').toString().trim(),
-            operator1: (val(['Operator 1', 'operator1', 'operator', 'Operator', 'operatör', 'Operatör'], 5) || '').toString().trim(),
-            teknisyen2: (val(['Teknisyen 2', 'teknisyen2'], 6) || '').toString().trim(),
-            operator2: (val(['Operator 2', 'operator2', 'Operatör 2'], 7) || '').toString().trim(),
+            teknisyen1: t1,
+            operator1: o1,
+            teknisyen2: t2,
+            operator2: o2,
             gorevTipi: (val(['Görev Tipi', 'gorevTipi'], 8) || '').toString().trim(),
             gorevBolgesi: (val(['Görev Bölgesi', 'gorevBolgesi'], 9) || '').toString().trim(),
             kalkis: parseExcelTime(val(['Kalkış', 'kalkis'], 10)),
@@ -870,6 +894,48 @@ export default function App() {
     localStorage.setItem('b360_flight_logs', JSON.stringify(logs));
   }, [logs]);
 
+  const syncWithBackendAndGAS = async (endpoint: '/api/add' | '/api/update' | '/api/delete', payload: any) => {
+    // 1. Try local server endpoint first (Express server.ts proxy)
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 6000);
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.success) {
+        return { success: true, method: 'server', data };
+      }
+      if (data && data.error) {
+        throw new Error(data.error);
+      }
+    } catch (err: any) {
+      console.warn(`Local server proxy ${endpoint} failed or unreachable, trying direct GAS:`, err);
+      // If it is an explicit error from GAS reported by the proxy, throw it
+      if (err?.message && !err.message.includes('fetch') && !err.message.includes('Failed to fetch') && !err.message.includes('abort')) {
+        throw err;
+      }
+    }
+
+    // 2. Direct GAS call (critical fallback for static hosting like Netlify)
+    try {
+      await fetch(GAS_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload)
+      });
+      return { success: true, method: 'gas_direct' };
+    } catch (err) {
+      console.error('Direct GAS call failed:', err);
+      throw err;
+    }
+  };
+
   const addLog = async (log: Omit<FlightLog, 'id' | 'ucusSuresi'>) => {
     setIsSubmitting(true);
     // Sıra No mantığı: Excel'den gelenler bittikten sonra 281'den devam etsin
@@ -883,8 +949,6 @@ export default function App() {
     const ucusSuresi = calculateDuration(log.kalkis, log.inis);
 
     // Standardize names: We keep FULL NAMES for Google Sheets sync
-    // but we can use getSurname for local display in some parts if needed.
-    // However, the user said "appropriate format for excel pages", which usually means full names.
     const newLog: FlightLog = {
       ...log,
       k9YanginHektar: log.gorevTipi === 'Yangın Uçuşu' ? log.k9YanginHektar : 0,
@@ -896,19 +960,8 @@ export default function App() {
 
     // Sync with Sheets
     try {
-      // Use no-cors to avoid preflight issues with Google Apps Script
-      // JSON data is sent as text/plain to stay as a "simple request"
-      await fetch(GAS_URL, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: {
-          'Content-Type': 'text/plain',
-        },
-        body: JSON.stringify(newLog),
-      });
+      await syncWithBackendAndGAS('/api/add', { action: 'add', ...newLog });
       
-      // Since no-cors doesn't allow reading the response, 
-      // and network errors usually throw, we provide positive feedback
       setIsSuccess(true);
       setTimeout(() => {
         setIsSuccess(false);
@@ -925,32 +978,23 @@ export default function App() {
 
   const [editingLog, setEditingLog] = useState<FlightLog | null>(null);
 
-  const deleteLog = async (id: string) => {
-    if (!window.confirm(`Sıra No ${id} olan kaydı silmek istediğinizden emin misiniz?`)) {
-      return;
-    }
-    
+  const executeDeleteLog = async (id: string) => {
     setIsLoading(true);
     const previousLogs = [...logs];
     setLogs(prev => prev.filter(l => l.id !== id));
     
     try {
-      await fetch(GAS_URL, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: {
-          'Content-Type': 'text/plain',
-        },
-        body: JSON.stringify({
-          action: 'delete',
-          ids: [id]
-        }),
+      await syncWithBackendAndGAS('/api/delete', {
+        action: 'delete',
+        id: id,
+        ids: [id]
       });
-      alert('Kayıt başarıyla silindi (E-tablo ile senkronize edildi).');
-    } catch (e) {
+      alert(`Sıra No ${id} olan kayıt e-tablodan başarıyla silindi.`);
+    } catch (e: any) {
       console.error('Delete sync failed', e);
       setLogs(previousLogs);
-      alert('HATA: Kayıt e-tablodan silinemedi. Lütfen internetinizi ve script ayarlarını kontrol edin.');
+      alert(`HATA: Kayıt silinemedi. Google E-Tablonuzdaki Apps Script (Code.gs) silme fonksiyonunu desteklemiyor olabilir. Lütfen arayüzdeki "E-Tablo Script Güncelle" butonundan kodunuzu güncelleyiniz.`);
+      setShowCodeModal(true);
     } finally {
       setIsLoading(false);
     }
@@ -971,24 +1015,19 @@ export default function App() {
     setLogs(prev => prev.map(l => l.id === id ? updatedLog : l));
 
     try {
-      await fetch(GAS_URL, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: {
-          'Content-Type': 'text/plain',
-        },
-        body: JSON.stringify({
-          action: 'update',
-          id: id,
-          data: updatedLog
-        }),
+      await syncWithBackendAndGAS('/api/update', {
+        action: 'update',
+        id: id,
+        data: updatedLog,
+        ...updatedLog
       });
-      alert('Kayıt başarıyla güncellendi (E-tablo ile senkronize edildi).');
+      alert(`✓ Sıra No ${id} olan kayıt Google E-Tablo üzerinde başarıyla güncellendi (Yeni satır açılmadı).`);
       setEditingLog(null);
-    } catch (e) {
+    } catch (e: any) {
       console.error('Update sync failed', e);
       setLogs(previousLogs);
-      alert('HATA: Kayıt güncellenemedi. Lütfen internetinizi ve script ayarlarını kontrol edin.');
+      const errMsg = e?.message || '';
+      alert(`HATA: Kayıt güncellenemedi (${errMsg || 'Lütfen internetinizi ve script ayarlarını kontrol edin'}).`);
     } finally {
       setIsSubmitting(false);
     }
@@ -1713,6 +1752,7 @@ export default function App() {
               ANA SAYFA
             </button>
           )}
+
           <NavButton active={activeTab === 'personnel'} onClick={() => setActiveTab('personnel')} icon={<Users size={14} />} label="EKİP" />
         </div>
       </header>
@@ -2021,14 +2061,18 @@ export default function App() {
                             <div className="flex justify-center gap-2">
                               <button
                                 onClick={() => setEditingLog(log)}
-                                className="px-2.5 py-1.5 bg-blue-600/80 hover:bg-blue-500 hover:text-white border border-blue-500/30 text-emerald-100 text-[10px] font-black rounded flex items-center gap-1 transition-all active:scale-95 shadow-md shadow-blue-950/50"
+                                title="Kaydı Düzenle"
+                                className="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white border border-sky-400/40 text-[10px] font-black rounded-lg flex items-center gap-1.5 transition-all active:scale-95 shadow-md shadow-sky-950/60 cursor-pointer"
                               >
+                                <Edit size={11} className="stroke-[2.5]" />
                                 DÜZENLE
                               </button>
                               <button
-                                onClick={() => deleteLog(log.id)}
-                                className="px-2.5 py-1.5 bg-red-600/80 hover:bg-red-500 hover:text-white border border-red-500/30 text-emerald-100 text-[10px] font-black rounded flex items-center gap-1 transition-all active:scale-95 shadow-md shadow-red-950/50"
+                                onClick={() => setConfirmDeleteId(log.id)}
+                                title="Kaydı E-Tablodan Sil"
+                                className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white border border-rose-400/40 text-[10px] font-black rounded-lg flex items-center gap-1.5 transition-all active:scale-95 shadow-md shadow-rose-950/60 cursor-pointer"
                               >
+                                <Trash2 size={11} className="stroke-[2.5]" />
                                 SİL
                               </button>
                             </div>
@@ -2335,6 +2379,49 @@ export default function App() {
           isSubmitting={isSubmitting}
           personnelData={personnelData}
         />
+      )}
+
+      {showCodeModal && (
+        <CodeModal onClose={() => setShowCodeModal(false)} />
+      )}
+
+      {confirmDeleteId && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-[100] p-4">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 10 }}
+            className="bg-forest-dark border-2 border-rose-500/30 rounded-3xl p-6 sm:p-8 max-w-sm w-full shadow-[0_0_50px_rgba(244,63,94,0.15)] flex flex-col items-center text-center gap-6"
+          >
+            <div className="w-16 h-16 bg-rose-500/10 rounded-2xl flex items-center justify-center text-rose-400 border border-rose-500/20 shadow-inner">
+              <Trash2 size={32} />
+            </div>
+            <div>
+              <h3 className="text-xl font-bold tracking-tight text-rose-100">KAYIT SİLME</h3>
+              <p className="text-xs text-rose-300/80 mt-1 uppercase font-semibold tracking-wider">Sıra No: {confirmDeleteId} olan kaydı silmek istediğinizden emin misiniz?</p>
+            </div>
+            <div className="flex gap-3 mt-2 w-full">
+              <button 
+                type="button"
+                onClick={() => setConfirmDeleteId(null)}
+                className="flex-1 bg-forest-base/50 text-emerald-400 border border-emerald-950 font-bold py-3 rounded-lg text-xs uppercase tracking-wider hover:bg-emerald-950 transition-all cursor-pointer"
+              >
+                VAZGEÇ
+              </button>
+              <button 
+                type="button"
+                onClick={() => {
+                  const idToDel = confirmDeleteId;
+                  setConfirmDeleteId(null);
+                  if (idToDel) executeDeleteLog(idToDel);
+                }}
+                className="flex-1 bg-rose-600 text-white font-black py-3 rounded-lg text-xs uppercase tracking-wider hover:bg-rose-500 shadow-lg shadow-rose-600/20 active:scale-95 transition-all cursor-pointer"
+              >
+                EVET, SİL
+              </button>
+            </div>
+          </motion.div>
+        </div>
       )}
     </div>
   );
@@ -2657,6 +2744,8 @@ function EditLogModal({ log, onClose, onSave, isSubmitting, personnelData }: {
     </div>
   );
 }
+
+
 
 function PersonnelPanel({ title, data, type, logs, personnelData }: { title: string, data: string[], type: string, logs: FlightLog[], personnelData: Record<string, PersonData> }) {
   return (
@@ -3099,6 +3188,205 @@ function FlightForm({ onSubmit, isSubmitting, personnelData }: {
           )}
         </div>
       </motion.form>
+    </div>
+  );
+}
+
+const CODE_GS_SAMPLE = `function getTargetSheet(ss) {
+  var active = ss.getActiveSheet();
+  if (active && active.getLastRow() > 1) return active;
+  var sheets = ss.getSheets();
+  var best = sheets[0];
+  var maxR = 0;
+  for (var i = 0; i < sheets.length; i++) {
+    var r = sheets[i].getLastRow();
+    if (r > maxR) { maxR = r; best = sheets[i]; }
+  }
+  return best;
+}
+
+function doPost(e) {
+  var lock = LockService.getScriptLock();
+  lock.tryLock(15000);
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = getTargetSheet(ss);
+    var rawData = e.postData ? e.postData.contents : "";
+    var body = {};
+    try { body = JSON.parse(rawData); } catch (err) { body = e.parameter || {}; }
+
+    var action = (body.action || "").toString().toLowerCase().trim();
+    var rawId = body.id || (body.data && body.data.id) || (body.ids && body.ids[0]) || "";
+    var targetId = rawId.toString().trim();
+    var targetNum = parseInt(targetId, 10);
+
+    var dataRange = sheet.getDataRange();
+    var values = dataRange.getValues();
+
+    function findRowIndex() {
+      if (!targetId && isNaN(targetNum)) return -1;
+      for (var r = 1; r < values.length; r++) {
+        var cellVal = values[r][0];
+        if (cellVal === undefined || cellVal === null || cellVal === "") continue;
+        var cellStr = cellVal.toString().trim();
+        var cellNum = parseInt(cellStr, 10);
+        if (cellStr === targetId || (!isNaN(targetNum) && !isNaN(cellNum) && cellNum === targetNum)) {
+          return r + 1;
+        }
+      }
+      return -1;
+    }
+
+    if (action === "delete") {
+      var rowToDelete = findRowIndex();
+      if (rowToDelete > 0) {
+        sheet.deleteRow(rowToDelete);
+        SpreadsheetApp.flush();
+        return ContentService.createTextOutput(JSON.stringify({ status: "success", action: "delete", id: targetId })).setMimeType(ContentService.MimeType.JSON);
+      } else {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", action: "delete", message: "Row not found" })).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    if (action === "update") {
+      var rowToUpdate = findRowIndex();
+      if (rowToUpdate <= 0) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", action: "update", message: "Row not found" })).setMimeType(ContentService.MimeType.JSON);
+      }
+      var item = body.data || body;
+      var updatedRowValues = [
+        targetId, item.tarih || "", item.kaptanPilot || "", item.ikinciPilot || "",
+        item.teknisyen1 || "", item.operator1 || "", item.teknisyen2 || "", item.operator2 || "",
+        item.gorevTipi || "", item.gorevBolgesi || "", item.kalkis || "", item.inis || "",
+        item.ucusSuresi || "", item.k9YanginHektar || 0, item.miktarCekim || 0,
+        item.tk9GorevHektar || 0, item.uyduDk || 0, item.aciklama || ""
+      ];
+      var targetRange = sheet.getRange(rowToUpdate, 1, 1, updatedRowValues.length);
+      try { targetRange.clearDataValidations(); } catch(e) {}
+      targetRange.setValues([updatedRowValues]);
+      SpreadsheetApp.flush();
+      return ContentService.createTextOutput(JSON.stringify({ status: "success", action: "update", id: targetId })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var addData = body.data || body;
+    var maxId = 0;
+    for (var m = 1; m < values.length; m++) {
+      var valNum = parseInt(values[m][0], 10);
+      if (!isNaN(valNum) && valNum > maxId) maxId = valNum;
+    }
+    var nextId = (addData.id || (maxId > 0 ? maxId + 1 : values.length)).toString();
+    var newRow = [
+      nextId, addData.tarih || "", addData.kaptanPilot || "", addData.ikinciPilot || "",
+      addData.teknisyen1 || "", addData.operator1 || "", addData.teknisyen2 || "", addData.operator2 || "",
+      addData.gorevTipi || "", addData.gorevBolgesi || "", addData.kalkis || "", addData.inis || "",
+      addData.ucusSuresi || "", addData.k9YanginHektar || 0, addData.miktarCekim || 0,
+      addData.tk9GorevHektar || 0, addData.uyduDk || 0, addData.aciklama || ""
+    ];
+    sheet.appendRow(newRow);
+    var lr = sheet.getLastRow();
+    try { sheet.getRange(lr, 1, 1, newRow.length).clearDataValidations(); } catch(e) {}
+    SpreadsheetApp.flush();
+    return ContentService.createTextOutput(JSON.stringify({ status: "success", action: "add", id: nextId })).setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ status: "error", message: err.toString() })).setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function doGet(e) {
+  var action = e && e.parameter && e.parameter.action;
+  if (action === "download") {
+    try {
+      var ss = SpreadsheetApp.getActiveSpreadsheet();
+      var url = "https://docs.google.com/spreadsheets/d/" + ss.getId() + "/export?format=xlsx";
+      var response = UrlFetchApp.fetch(url, {
+        headers: { "Authorization": "Bearer " + ScriptApp.getOAuthToken() },
+        muteHttpExceptions: true
+      });
+      return ContentService.createTextOutput(JSON.stringify({ status: "success", base64: Utilities.base64Encode(response.getBlob().getBytes()) })).setMimeType(ContentService.MimeType.JSON);
+    } catch (err) {
+      return ContentService.createTextOutput(JSON.stringify({ status: "error", message: err.toString() })).setMimeType(ContentService.MimeType.JSON);
+    }
+  }
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = getTargetSheet(ss);
+  var values = sheet.getDataRange().getValues();
+  if (values.length <= 1) return ContentService.createTextOutput(JSON.stringify([])).setMimeType(ContentService.MimeType.JSON);
+
+  var resultList = [];
+  for (var i = 1; i < values.length; i++) {
+    var row = values[i];
+    if (row[0] === "" || row[0] === undefined || row[0] === null) continue;
+    resultList.push({
+      siraNo: row[0], "Sıra No": row[0],
+      tarih: row[1], "Tarih": row[1],
+      kaptanPilot: row[2], "Kaptan Pilot": row[2],
+      ikinciPilot: row[3], "2. Pilot": row[3],
+      teknisyen1: row[4], "Teknisyen 1": row[4],
+      operator1: row[5], "Operator 1": row[5],
+      teknisyen2: row[6], "Teknisyen 2": row[6],
+      operator2: row[7], "Operator 2": row[7],
+      gorevTipi: row[8], "Görev Tipi": row[8],
+      gorevBolgesi: row[9], "Görev Bölgesi": row[9],
+      kalkis: row[10], "Kalkış": row[10],
+      inis: row[11], "İniş": row[11],
+      ucusSuresi: row[12], "Uçuş Süresi": row[12],
+      k9YanginHektar: row[13], "TK-9 Yangın(Hektar)": row[13],
+      miktarCekim: row[14], "Miktar (Çekim)": row[14],
+      tk9GorevHektar: row[15], "TK-9 gorev(Hektar)": row[15],
+      uyduDk: row[16], "Uydu (Dk)": row[16],
+      aciklama: row[17], "AÇIKLAMA": row[17]
+    });
+  }
+  return ContentService.createTextOutput(JSON.stringify(resultList)).setMimeType(ContentService.MimeType.JSON);
+}`;
+
+function CodeModal({ onClose }: { onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = () => {
+    navigator.clipboard.writeText(CODE_GS_SAMPLE);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
+  };
+  return (
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-[100] p-4 overflow-y-auto">
+      <div className="bg-forest-dark border-2 border-amber-500/30 rounded-3xl p-6 md:p-8 max-w-4xl w-full shadow-2xl flex flex-col gap-6 max-h-[90vh] overflow-y-auto">
+        <div className="flex justify-between items-center border-b border-emerald-800/60 pb-4">
+          <div className="text-left">
+            <h3 className="text-base font-black text-amber-200 flex items-center gap-2">
+              <span className="bg-amber-950 px-2 py-0.5 rounded text-amber-400 text-xs font-mono">Code.gs</span>
+              E-TABLO SİLME VE GÜNCELLEME İÇİN GEREKLİ KOD
+            </h3>
+            <p className="text-[10px] text-emerald-400/80 mt-1">Silme (Sil) ve Düzenleme işlemlerinin e-tabloda çalışması için Code.gs kodunu güncelleyin.</p>
+          </div>
+          <button type="button" onClick={onClose} className="text-emerald-400 hover:text-emerald-200 font-bold text-xs cursor-pointer">KAPAT</button>
+        </div>
+        <div className="bg-amber-950/20 border border-amber-600/30 rounded-xl p-4 text-left text-xs space-y-2 text-amber-100">
+          <p className="font-bold text-amber-300">Güncelleme Adımları:</p>
+          <ol className="list-decimal list-inside space-y-1">
+            <li>E-Tablonuzda <b>Uzantılar &gt; Apps Script</b> menüsüne gidin.</li>
+            <li>Mevcut kodun tamamını silip aşağıdaki kodu yapıştırın ve <b>Kaydet (Ctrl+S)</b> yapın.</li>
+            <li>Sağ üstten <b>Dağıt &gt; Dağıtımları Yönet</b> &gt; Düzenle &gt; Sürüm: <b>Yeni Sürüm</b> seçip <b>Dağıt</b> deyin.</li>
+          </ol>
+        </div>
+        <div className="flex justify-between items-center">
+          <span className="text-[10px] font-mono text-emerald-400">Code.gs İçeriği</span>
+          <button onClick={handleCopy} className={`px-4 py-2 rounded-xl text-xs font-black text-white cursor-pointer ${copied ? 'bg-emerald-600' : 'bg-amber-600 hover:bg-amber-500'}`}>
+            {copied ? 'KOPYALANDI!' : 'KODU KOPYALA'}
+          </button>
+        </div>
+        <pre className="bg-forest-base border border-emerald-800 rounded-xl p-4 text-[11px] font-mono text-emerald-300 overflow-x-auto max-h-80 select-all text-left">
+          {CODE_GS_SAMPLE}
+        </pre>
+        <div className="flex justify-end">
+          <button type="button" onClick={onClose} className="px-6 py-2.5 bg-emerald-900/40 hover:bg-emerald-800 text-emerald-200 border border-emerald-700 rounded-xl text-xs font-black uppercase cursor-pointer">
+            ANLADIM / KAPAT
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
