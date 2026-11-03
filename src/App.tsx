@@ -1027,7 +1027,12 @@ export default function App() {
       console.error('Update sync failed', e);
       setLogs(previousLogs);
       const errMsg = e?.message || '';
-      alert(`HATA: Kayıt güncellenemedi (${errMsg || 'Lütfen internetinizi ve script ayarlarını kontrol edin'}).`);
+      if (errMsg.includes('veri doğrulama') || errMsg.includes('ihlal ediyor')) {
+        alert(`DİKKAT: Google E-Tablonuzdaki Veri Doğrulama (Açılır Liste) Kuralı Hatası!\n\n${errMsg}\n\nBu hatayı kalıcı olarak çözmek için e-tablonuzdaki Code.gs kodunu güncellemeniz gerekmektedir. Şimdi Code.gs güncelleme kılavuzunu açıyoruz.`);
+        setShowCodeModal(true);
+      } else {
+        alert(`HATA: Kayıt güncellenemedi (${errMsg || 'Lütfen internetinizi ve script ayarlarını kontrol edin'}).`);
+      }
     } finally {
       setIsSubmitting(false);
     }
