@@ -19,7 +19,7 @@ async function startServer() {
   app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
   // Google Apps Script URL
-  const GAS_URL = 'https://script.google.com/macros/s/AKfycbwUHTSTMzkDD7Gn9_sPC9Lf-fUAvcMVyk3AlJm2OfwOjaR2uSyEcXZckH5Apn1f6FOT/exec';
+  const GAS_URL = 'https://script.google.com/macros/s/AKfycbyEeDha6Fw4pviggDXAsUmQ1pEWm_TwTYDrirGZHKJxagOI8ZXLPEkLGgqyb9eNfhj0/exec';
 
   // Health check endpoint
   app.get('/api/health', (req, res) => {

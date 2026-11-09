@@ -48,6 +48,7 @@ export const TECHNICIANS = [
 export const GOREV_TIPLERI = [
   'TK-9 Çekimi',
   'Yangın Uçuşu',
+  'Test Uçuşu',
   'PMN(Personel Malzeme Nakli)',
   'VIP',
   'Eğitim',

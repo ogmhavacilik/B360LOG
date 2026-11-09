@@ -36,7 +36,7 @@ import XLSX from 'xlsx-js-style';
 import { FlightLog, PILOTS, TECHNICIANS, GOREV_TIPLERI } from './types';
 
 // Google Apps Script URLs
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbwUHTSTMzkDD7Gn9_sPC9Lf-fUAvcMVyk3AlJm2OfwOjaR2uSyEcXZckH5Apn1f6FOT/exec';
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbyEeDha6Fw4pviggDXAsUmQ1pEWm_TwTYDrirGZHKJxagOI8ZXLPEkLGgqyb9eNfhj0/exec';
 const PILOT_DATA_URL = 'https://script.google.com/macros/s/AKfycbx5jJmZ6sU8qpSwCFwp41z_7fJYy-buB4BD5686jAoM3xqVw39m3q3iDbkVbQCDUZ5U/exec';
 const TECH_DATA_URL = 'https://script.google.com/macros/s/AKfycbwcRIUfG0WfyEb5aWiJnpiNTvbo5XGz_WcetUlkoQGmZuTTBxvdsvsV2HQRPq8ewqEy/exec';
 const PERSONNEL_SHEET_URL = 'https://script.google.com/macros/s/AKfycbytVmnCY7Spjg-Rges0k-BgEJqZSM8iNJoXu0UHuKFeubm4vlSzemzzVec4UgUQ96Q7/exec';
@@ -169,6 +169,79 @@ const isPersonMatch = (logCellValue: any, selectedFullName: string): boolean => 
   }
 
   return false;
+};
+
+const resolvePersonnelName = (rawName: string, candidateList: string[] = []): string => {
+  if (!rawName || typeof rawName !== 'string') return '';
+  const trimmed = rawName.trim();
+  if (!trimmed) return '';
+
+  const normalizeForMatch = (str: string): string => {
+    return str
+      .replace(/İ/g, "I")
+      .replace(/ı/g, "I")
+      .replace(/Ğ/g, "G")
+      .replace(/ğ/g, "G")
+      .replace(/Ü/g, "U")
+      .replace(/ü/g, "U")
+      .replace(/Ş/g, "S")
+      .replace(/ş/g, "S")
+      .replace(/Ö/g, "O")
+      .replace(/ö/g, "O")
+      .replace(/Ç/g, "C")
+      .replace(/ç/g, "C")
+      .toUpperCase()
+      .replace(/KEBABCI/g, "KEBAPCI")
+      .trim();
+  };
+
+  const cleanRaw = normalizeForMatch(trimmed);
+
+  const getWords = (s: string) => {
+    return s.replace(/[^\w\s]/g, ' ').split(/\s+/).filter(Boolean);
+  };
+
+  const rawWords = getWords(cleanRaw);
+  if (rawWords.length === 0) return trimmed;
+
+  const pool = Array.from(new Set([...candidateList, ...PILOTS, ...TECHNICIANS]));
+
+  // 1. Direct exact normalized match
+  for (const cand of pool) {
+    if (normalizeForMatch(cand) === cleanRaw) return cand;
+  }
+
+  // 2. Check if candidate surname matches any raw word (e.g. "ÖZCAN" matches "FERHAT ÖZCAN")
+  for (const cand of pool) {
+    const candClean = normalizeForMatch(cand);
+    const candWords = getWords(candClean);
+    const candSurname = candWords[candWords.length - 1];
+
+    if (rawWords.includes(candSurname) || candWords.includes(cleanRaw)) {
+      return cand;
+    }
+  }
+
+  // 3. Check if all raw words are contained in candidate words (e.g. "FERHAT ÖZCAN" vs "ÖZCAN FERHAT")
+  for (const cand of pool) {
+    const candClean = normalizeForMatch(cand);
+    const candWords = getWords(candClean);
+    if (rawWords.every(w => candWords.includes(w))) {
+      return cand;
+    }
+  }
+
+  // 4. Check if any raw word matches a candidate first/middle name (e.g. "TEZCAN" matches "TEZCAN GÜZER")
+  for (const cand of pool) {
+    const candClean = normalizeForMatch(cand);
+    const candWords = getWords(candClean);
+    if (candWords.some(cw => rawWords.includes(cw) && cw.length >= 3)) {
+      return cand;
+    }
+  }
+
+  // 5. Fallback
+  return trimmed;
 };
 
 const formatDateToTR = (dateStr: string): string => {
@@ -796,16 +869,19 @@ export default function App() {
             }
           }
 
-          // 1:1 direct column mapping from Excel to FlightLog attributes without changing any text
+          const rawKaptan = (val(['Kaptan Pilot', 'kaptanPilot'], 2) || '').toString().trim();
+          const rawIkinci = (val(['2. Pilot', 'ikinciPilot'], 3) || '').toString().trim();
+
+          // 1:1 direct column mapping from Excel to FlightLog attributes with intelligent personnel matching
           const cleaned: FlightLog = {
             id: idRaw,
             tarih: historyTarih,
-            kaptanPilot: (val(['Kaptan Pilot', 'kaptanPilot'], 2) || '').toString().trim(),
-            ikinciPilot: (val(['2. Pilot', 'ikinciPilot'], 3) || '').toString().trim(),
-            teknisyen1: t1,
-            operator1: o1,
-            teknisyen2: t2,
-            operator2: o2,
+            kaptanPilot: resolvePersonnelName(rawKaptan, PILOTS),
+            ikinciPilot: resolvePersonnelName(rawIkinci, PILOTS),
+            teknisyen1: resolvePersonnelName(t1, TECHNICIANS),
+            operator1: resolvePersonnelName(o1, TECHNICIANS),
+            teknisyen2: resolvePersonnelName(t2, TECHNICIANS),
+            operator2: resolvePersonnelName(o2, TECHNICIANS),
             gorevTipi: (val(['Görev Tipi', 'gorevTipi'], 8) || '').toString().trim(),
             gorevBolgesi: (val(['Görev Bölgesi', 'gorevBolgesi'], 9) || '').toString().trim(),
             kalkis: parseExcelTime(val(['Kalkış', 'kalkis'], 10)),
@@ -951,16 +1027,24 @@ export default function App() {
     // Standardize names: We keep FULL NAMES for Google Sheets sync
     const newLog: FlightLog = {
       ...log,
-      k9YanginHektar: log.gorevTipi === 'Yangın Uçuşu' ? log.k9YanginHektar : 0,
+      k9YanginHektar: Number(log.k9YanginHektar) || 0,
       id: nextId,
       ucusSuresi: ucusSuresi
     };
 
     setLogs([newLog, ...logs]);
 
-    // Sync with Sheets
+    // Sync with Sheets (Save technicians with surname only to E-Tablo)
     try {
-      await syncWithBackendAndGAS('/api/add', { action: 'add', ...newLog });
+      const gasPayload = {
+        action: 'add',
+        ...newLog,
+        teknisyen1: getSurname(newLog.teknisyen1),
+        operator1: getSurname(newLog.operator1),
+        teknisyen2: getSurname(newLog.teknisyen2),
+        operator2: getSurname(newLog.operator2)
+      };
+      await syncWithBackendAndGAS('/api/add', gasPayload);
       
       setIsSuccess(true);
       setTimeout(() => {
@@ -1006,7 +1090,7 @@ export default function App() {
     const ucusSuresi = calculateDuration(updatedFields.kalkis, updatedFields.inis);
     const updatedLog: FlightLog = {
       ...updatedFields,
-      k9YanginHektar: updatedFields.gorevTipi === 'Yangın Uçuşu' ? updatedFields.k9YanginHektar : 0,
+      k9YanginHektar: Number(updatedFields.k9YanginHektar) || 0,
       id: id,
       ucusSuresi: ucusSuresi
     };
@@ -1015,19 +1099,31 @@ export default function App() {
     setLogs(prev => prev.map(l => l.id === id ? updatedLog : l));
 
     try {
-      await syncWithBackendAndGAS('/api/update', {
+      const gasPayload = {
         action: 'update',
         id: id,
-        data: updatedLog,
-        ...updatedLog
-      });
+        data: {
+          ...updatedLog,
+          teknisyen1: getSurname(updatedLog.teknisyen1),
+          operator1: getSurname(updatedLog.operator1),
+          teknisyen2: getSurname(updatedLog.teknisyen2),
+          operator2: getSurname(updatedLog.operator2)
+        },
+        ...updatedLog,
+        teknisyen1: getSurname(updatedLog.teknisyen1),
+        operator1: getSurname(updatedLog.operator1),
+        teknisyen2: getSurname(updatedLog.teknisyen2),
+        operator2: getSurname(updatedLog.operator2)
+      };
+
+      await syncWithBackendAndGAS('/api/update', gasPayload);
       alert(`✓ Sıra No ${id} olan kayıt Google E-Tablo üzerinde başarıyla güncellendi (Yeni satır açılmadı).`);
       setEditingLog(null);
     } catch (e: any) {
       console.error('Update sync failed', e);
       setLogs(previousLogs);
       const errMsg = e?.message || '';
-      if (errMsg.includes('veri doğrulama') || errMsg.includes('ihlal ediyor')) {
+      if (errMsg.includes('veri doğrulama') || errMsg.includes('ihlal ediyor') || /C\d+/i.test(errMsg)) {
         alert(`DİKKAT: Google E-Tablonuzdaki Veri Doğrulama (Açılır Liste) Kuralı Hatası!\n\n${errMsg}\n\nBu hatayı kalıcı olarak çözmek için e-tablonuzdaki Code.gs kodunu güncellemeniz gerekmektedir. Şimdi Code.gs güncelleme kılavuzunu açıyoruz.`);
         setShowCodeModal(true);
       } else {
@@ -2439,14 +2535,51 @@ function EditLogModal({ log, onClose, onSave, isSubmitting, personnelData }: {
   isSubmitting: boolean;
   personnelData: Record<string, PersonData>;
 }) {
+  const rawPilotOptions = Array.from(new Set([
+    ...PILOTS, 
+    ...Object.values(personnelData).filter(p => !p.role || p.role.includes('Pilot') || p.role.includes('Kaptan')).map(p => p.fullName)
+  ])).sort((a, b) => getSurname(a).localeCompare(getSurname(b)));
+
+  const rawTechnicalOptions = Array.from(new Set([
+    ...TECHNICIANS, 
+    ...Object.values(personnelData).filter(p => !p.role || (!p.role.includes('Pilot') && !p.role.includes('Kaptan'))).map(p => p.fullName)
+  ])).sort((a, b) => getSurname(a).localeCompare(getSurname(b)));
+
+  const resolvedKaptan = resolvePersonnelName(log.kaptanPilot, rawPilotOptions);
+  const resolvedIkinci = resolvePersonnelName(log.ikinciPilot, rawPilotOptions);
+  const resolvedTek1 = resolvePersonnelName(log.teknisyen1, rawTechnicalOptions);
+  const resolvedOpr1 = resolvePersonnelName(log.operator1, rawTechnicalOptions);
+  const resolvedTek2 = resolvePersonnelName(log.teknisyen2, rawTechnicalOptions);
+  const resolvedOpr2 = resolvePersonnelName(log.operator2, rawTechnicalOptions);
+
+  const pilotOptions = Array.from(new Set([
+    ...rawPilotOptions,
+    ...(resolvedKaptan ? [resolvedKaptan] : []),
+    ...(resolvedIkinci ? [resolvedIkinci] : []),
+    ...(log.kaptanPilot ? [log.kaptanPilot] : []),
+    ...(log.ikinciPilot ? [log.ikinciPilot] : [])
+  ])).sort((a, b) => getSurname(a).localeCompare(getSurname(b)));
+
+  const technicalOptions = Array.from(new Set([
+    ...rawTechnicalOptions,
+    ...(resolvedTek1 ? [resolvedTek1] : []),
+    ...(resolvedOpr1 ? [resolvedOpr1] : []),
+    ...(resolvedTek2 ? [resolvedTek2] : []),
+    ...(resolvedOpr2 ? [resolvedOpr2] : []),
+    ...(log.teknisyen1 ? [log.teknisyen1] : []),
+    ...(log.operator1 ? [log.operator1] : []),
+    ...(log.teknisyen2 ? [log.teknisyen2] : []),
+    ...(log.operator2 ? [log.operator2] : [])
+  ])).sort((a, b) => getSurname(a).localeCompare(getSurname(b)));
+
   const [formData, setFormData] = useState<Omit<FlightLog, 'id' | 'ucusSuresi'>>({
     tarih: log.tarih || '',
-    kaptanPilot: log.kaptanPilot || '',
-    ikinciPilot: log.ikinciPilot || '',
-    teknisyen1: log.teknisyen1 || '',
-    operator1: log.operator1 || '',
-    teknisyen2: log.teknisyen2 || '',
-    operator2: log.operator2 || '',
+    kaptanPilot: resolvedKaptan || log.kaptanPilot || '',
+    ikinciPilot: resolvedIkinci || log.ikinciPilot || '',
+    teknisyen1: resolvedTek1 || log.teknisyen1 || '',
+    operator1: resolvedOpr1 || log.operator1 || '',
+    teknisyen2: resolvedTek2 || log.teknisyen2 || '',
+    operator2: resolvedOpr2 || log.operator2 || '',
     gorevTipi: log.gorevTipi || '',
     gorevBolgesi: log.gorevBolgesi || '',
     kalkis: log.kalkis || '',
@@ -2457,16 +2590,6 @@ function EditLogModal({ log, onClose, onSave, isSubmitting, personnelData }: {
     uyduDk: Number(log.uyduDk) || 0,
     aciklama: log.aciklama || ''
   });
-
-  const pilotOptions = Array.from(new Set([
-    ...PILOTS, 
-    ...Object.values(personnelData).filter(p => !p.role || p.role.includes('Pilot') || p.role.includes('Kaptan')).map(p => p.fullName)
-  ])).sort((a, b) => getSurname(a).localeCompare(getSurname(b)));
-
-  const technicalOptions = Array.from(new Set([
-    ...TECHNICIANS, 
-    ...Object.values(personnelData).filter(p => !p.role || (!p.role.includes('Pilot') && !p.role.includes('Kaptan'))).map(p => p.fullName)
-  ])).sort((a, b) => getSurname(a).localeCompare(getSurname(b)));
 
   const labelStyle = "text-[9px] text-emerald-400 uppercase font-black mb-1 block tracking-widest pl-1 text-left";
   const inputStyle = "w-full bg-forest-base border border-emerald-800 rounded px-3 py-2 text-xs text-emerald-50 focus:outline-none focus:border-emerald-500 placeholder:opacity-25 transition-all font-medium text-left";
@@ -2690,8 +2813,7 @@ function EditLogModal({ log, onClose, onSave, isSubmitting, personnelData }: {
                   step="0.1"
                   value={formData.k9YanginHektar} 
                   onChange={e => setFormData({ ...formData, k9YanginHektar: Number(e.target.value) || 0 })}
-                  disabled={formData.gorevTipi !== 'Yangın Uçuşu'}
-                  className={`${inputStyle} disabled:opacity-30`} 
+                  className={inputStyle} 
                 />
               </div>
               <div className="text-left">
@@ -3119,7 +3241,7 @@ function FlightForm({ onSubmit, isSubmitting, personnelData }: {
             </div>
 
             <div className="grid grid-cols-2 gap-4">
-              <div className={formData.gorevTipi === 'Yangın Uçuşu' ? 'opacity-30 pointer-events-none' : ''}>
+              <div>
                 <label className={labelStyle}>TK-9 Görev (Hk)</label>
                 <div className="relative">
                   <ArrowRight className="absolute left-3 top-1/2 -translate-y-1/2 text-blue-900/50" size={14} />
@@ -3127,7 +3249,6 @@ function FlightForm({ onSubmit, isSubmitting, personnelData }: {
                     type="number" 
                     step="0.01" 
                     min="0"
-                    disabled={formData.gorevTipi === 'Yangın Uçuşu'}
                     placeholder="0"
                     className={`${inputStyle} pl-10`} 
                     value={formData.tk9GorevHektar || ''} 
@@ -3197,104 +3318,264 @@ function FlightForm({ onSubmit, isSubmitting, personnelData }: {
   );
 }
 
-const CODE_GS_SAMPLE = `function getTargetSheet(ss) {
+const CODE_GS_SAMPLE = `/**
+ * GOOGLE APPS SCRIPT KODU (Code.gs) - VERSİYON 3.0 (KESİN ÇÖZÜM)
+ * -------------------------------------------------------------
+ * Bu kodu Google E-Tablonuzdaki:
+ * "Uzantılar > Apps Script" (Extensions > Apps Script) bölümüne
+ * girip Code.gs içeriğini SİLİP bu kodun TAMAMINI yapıştırın:
+ * 
+ * 1. "Kaydet" (Ctrl+S) simgesine basınız.
+ * 2. Sağ üstteki mavi "Dağıt" (Deploy) > "Dağıtımları Yönet" (Manage Deployments)
+ * 3. Kalem (Düzenle) ikonuna tıklayın.
+ * 4. Sürüm (Version) kısmından "Yeni Sürüm" (New Version) seçin.
+ * 5. "Dağıt" (Deploy) butonuna basarak tamamlayın.
+ * 
+ * YAPILAN KRİTİK İYİLEŞTİRMELER:
+ * 1. [VERİ DOĞRULAMA HATASI ÇÖZÜLDÜ]: Google E-Tablo'daki açılır listelerden kaynaklanan
+ *    "C312 hücresine girdiğiniz veriler veri doğrulama kurallarını ihlal ediyor" hatası
+ *    güncellenen satır için kısıtlamalar kaldırılarak kalıcı olarak giderildi.
+ * 2. [MEVCUT SATIR ÜZERİNE YAZMA]: Düzenleme yapıldığında kesinlikle yeni satır açılmaz,
+ *    seçilen Sıra No'lu satır doğrudan kendi yerinde güncellenir.
+ * 3. [TEK SEFERDE TAM SİLME]: Silme işleminde seçilen satır tablodan tamamen kaldırılır.
+ */
+
+function getTargetSheet(ss) {
   var active = ss.getActiveSheet();
-  if (active && active.getLastRow() > 1) return active;
+  if (active && active.getLastRow() > 1) {
+    return active;
+  }
   var sheets = ss.getSheets();
   var best = sheets[0];
   var maxR = 0;
   for (var i = 0; i < sheets.length; i++) {
     var r = sheets[i].getLastRow();
-    if (r > maxR) { maxR = r; best = sheets[i]; }
+    if (r > maxR) {
+      maxR = r;
+      best = sheets[i];
+    }
   }
   return best;
 }
 
 function doPost(e) {
   var lock = LockService.getScriptLock();
-  lock.tryLock(15000);
+  lock.tryLock(15000); // 15 saniye kilit koruması
+
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var sheet = getTargetSheet(ss);
+    
     var rawData = e.postData ? e.postData.contents : "";
     var body = {};
-    try { body = JSON.parse(rawData); } catch (err) { body = e.parameter || {}; }
+
+    try {
+      body = JSON.parse(rawData);
+    } catch (parseErr) {
+      body = e.parameter || {};
+    }
 
     var action = (body.action || "").toString().toLowerCase().trim();
     var rawId = body.id || (body.data && body.data.id) || (body.ids && body.ids[0]) || "";
     var targetId = rawId.toString().trim();
     var targetNum = parseInt(targetId, 10);
 
+    // E-Tablodaki tüm satırları tara (Sıra No = Sütun A)
     var dataRange = sheet.getDataRange();
     var values = dataRange.getValues();
 
+    // Yardımcı: Sıra No eşleşen satırı bul (1-tabanlı)
     function findRowIndex() {
       if (!targetId && isNaN(targetNum)) return -1;
-      for (var r = 1; r < values.length; r++) {
+      for (var r = 1; r < values.length; r++) { // Başlık satırını atla (r=0)
         var cellVal = values[r][0];
         if (cellVal === undefined || cellVal === null || cellVal === "") continue;
+        
         var cellStr = cellVal.toString().trim();
         var cellNum = parseInt(cellStr, 10);
+
         if (cellStr === targetId || (!isNaN(targetNum) && !isNaN(cellNum) && cellNum === targetNum)) {
-          return r + 1;
+          return r + 1; // 1-tabanlı getRange indeksi
         }
       }
       return -1;
     }
 
+    // ==========================================
+    // 1. İŞLEM: DÜZENLEME / GÜNCELLEME (UPDATE)
+    // ==========================================
+    if (action === "update") {
+      if (!targetId && isNaN(targetNum)) {
+        return createJsonResponse({ 
+          status: "error", 
+          action: "update",
+          message: "Güncellenecek Sıra No (id) belirtilmedi." 
+        });
+      }
+
+      var rowToUpdate = findRowIndex();
+
+      if (rowToUpdate <= 0) {
+        return createJsonResponse({ 
+          status: "error", 
+          action: "update", 
+          id: targetId, 
+          message: "HATA: Sıra No " + targetId + " e-tabloda bulunamadı! Yeni satır açılmadı." 
+        });
+      }
+
+      var item = body.data || body;
+      var updatedRowValues = [
+        targetId,
+        item.tarih || "",
+        item.kaptanPilot || "",
+        item.ikinciPilot || "",
+        item.teknisyen1 || "",
+        item.operator1 || "",
+        item.teknisyen2 || "",
+        item.operator2 || "",
+        item.gorevTipi || "",
+        item.gorevBolgesi || "",
+        item.kalkis || "",
+        item.inis || "",
+        item.ucusSuresi || "",
+        item.k9YanginHektar !== undefined && item.k9YanginHektar !== null ? item.k9YanginHektar : "",
+        item.miktarCekim !== undefined && item.miktarCekim !== null ? item.miktarCekim : "",
+        item.tk9GorevHektar !== undefined && item.tk9GorevHektar !== null ? item.tk9GorevHektar : "",
+        item.uyduDk !== undefined && item.uyduDk !== null ? item.uyduDk : "",
+        item.aciklama || ""
+      ];
+
+      var targetRange = sheet.getRange(rowToUpdate, 1, 1, updatedRowValues.length);
+
+      // KRİTİK: Açılır menü / Veri Doğrulama (Data Validation) kurallarını bu satır için kaldır
+      // Bu sayede "veri doğrulama kurallarını ihlal ediyor" hatası ASLA oluşmaz!
+      try {
+        targetRange.clearDataValidations();
+      } catch (valErr) {}
+
+      // Verileri doğrudan aynı satır üzerine yaz
+      try {
+        targetRange.setValues([updatedRowValues]);
+      } catch (setErr) {
+        // Hücre hücre güvenli fallback yazımı
+        for (var c = 0; c < updatedRowValues.length; c++) {
+          try {
+            var cell = sheet.getRange(rowToUpdate, c + 1);
+            try { cell.clearDataValidations(); } catch (cvErr) {}
+            cell.setValue(updatedRowValues[c]);
+          } catch (cErr) {}
+        }
+      }
+
+      SpreadsheetApp.flush();
+
+      return createJsonResponse({ 
+        status: "success", 
+        action: "update", 
+        id: targetId, 
+        row: rowToUpdate,
+        message: "Sıra No " + targetId + " olan uçuş kaydı E-Tabloda (Satır " + rowToUpdate + ") başarıyla güncellendi." 
+      });
+    }
+
+    // ==========================================
+    // 2. İŞLEM: SİLME (DELETE)
+    // ==========================================
     if (action === "delete") {
+      if (!targetId && isNaN(targetNum)) {
+        return createJsonResponse({ 
+          status: "error", 
+          action: "delete", 
+          message: "Silinecek Sıra No (id) belirtilmedi." 
+        });
+      }
+
       var rowToDelete = findRowIndex();
+
       if (rowToDelete > 0) {
         sheet.deleteRow(rowToDelete);
         SpreadsheetApp.flush();
-        return ContentService.createTextOutput(JSON.stringify({ status: "success", action: "delete", id: targetId })).setMimeType(ContentService.MimeType.JSON);
+        return createJsonResponse({ 
+          status: "success", 
+          action: "delete", 
+          id: targetId, 
+          message: "Sıra No " + targetId + " olan kayıt e-tablodan başarıyla silindi." 
+        });
       } else {
-        return ContentService.createTextOutput(JSON.stringify({ status: "error", action: "delete", message: "Row not found" })).setMimeType(ContentService.MimeType.JSON);
+        return createJsonResponse({ 
+          status: "error", 
+          action: "delete", 
+          id: targetId, 
+          message: "Sıra No " + targetId + " bulunamadı (zaten silinmiş olabilir)." 
+        });
       }
     }
 
-    if (action === "update") {
-      var rowToUpdate = findRowIndex();
-      if (rowToUpdate <= 0) {
-        return ContentService.createTextOutput(JSON.stringify({ status: "error", action: "update", message: "Row not found" })).setMimeType(ContentService.MimeType.JSON);
+    // ==========================================
+    // 3. İŞLEM: YENİ KAYIT EKLEME (ADD)
+    // ==========================================
+    if (action === "add" || !action) {
+      var addData = body.data || body;
+      
+      var maxId = 0;
+      for (var m = 1; m < values.length; m++) {
+        var valNum = parseInt(values[m][0], 10);
+        if (!isNaN(valNum) && valNum > maxId) {
+          maxId = valNum;
+        }
       }
-      var item = body.data || body;
-      var updatedRowValues = [
-        targetId, item.tarih || "", item.kaptanPilot || "", item.ikinciPilot || "",
-        item.teknisyen1 || "", item.operator1 || "", item.teknisyen2 || "", item.operator2 || "",
-        item.gorevTipi || "", item.gorevBolgesi || "", item.kalkis || "", item.inis || "",
-        item.ucusSuresi || "", item.k9YanginHektar || 0, item.miktarCekim || 0,
-        item.tk9GorevHektar || 0, item.uyduDk || 0, item.aciklama || ""
+      var nextId = (addData.id || (maxId > 0 ? maxId + 1 : values.length)).toString();
+
+      var newRow = [
+        nextId,
+        addData.tarih || "",
+        addData.kaptanPilot || "",
+        addData.ikinciPilot || "",
+        addData.teknisyen1 || "",
+        addData.operator1 || "",
+        addData.teknisyen2 || "",
+        addData.operator2 || "",
+        addData.gorevTipi || "",
+        addData.gorevBolgesi || "",
+        addData.kalkis || "",
+        addData.inis || "",
+        addData.ucusSuresi || "",
+        addData.k9YanginHektar !== undefined && addData.k9YanginHektar !== null ? addData.k9YanginHektar : "",
+        addData.miktarCekim !== undefined && addData.miktarCekim !== null ? addData.miktarCekim : "",
+        addData.tk9GorevHektar !== undefined && addData.tk9GorevHektar !== null ? addData.tk9GorevHektar : "",
+        addData.uyduDk !== undefined && addData.uyduDk !== null ? addData.uyduDk : "",
+        addData.aciklama || ""
       ];
-      var targetRange = sheet.getRange(rowToUpdate, 1, 1, updatedRowValues.length);
-      try { targetRange.clearDataValidations(); } catch(e) {}
-      targetRange.setValues([updatedRowValues]);
+
+      try {
+        sheet.appendRow(newRow);
+        var lr = sheet.getLastRow();
+        try { sheet.getRange(lr, 1, 1, newRow.length).clearDataValidations(); } catch(e) {}
+      } catch(appErr) {
+        var lr2 = sheet.getLastRow() + 1;
+        var rRange = sheet.getRange(lr2, 1, 1, newRow.length);
+        try { rRange.clearDataValidations(); } catch(e) {}
+        rRange.setValues([newRow]);
+      }
+
       SpreadsheetApp.flush();
-      return ContentService.createTextOutput(JSON.stringify({ status: "success", action: "update", id: targetId })).setMimeType(ContentService.MimeType.JSON);
+
+      return createJsonResponse({ 
+        status: "success", 
+        action: "add", 
+        id: nextId, 
+        message: "Yeni kayıt başarıyla eklendi." 
+      });
     }
 
-    var addData = body.data || body;
-    var maxId = 0;
-    for (var m = 1; m < values.length; m++) {
-      var valNum = parseInt(values[m][0], 10);
-      if (!isNaN(valNum) && valNum > maxId) maxId = valNum;
-    }
-    var nextId = (addData.id || (maxId > 0 ? maxId + 1 : values.length)).toString();
-    var newRow = [
-      nextId, addData.tarih || "", addData.kaptanPilot || "", addData.ikinciPilot || "",
-      addData.teknisyen1 || "", addData.operator1 || "", addData.teknisyen2 || "", addData.operator2 || "",
-      addData.gorevTipi || "", addData.gorevBolgesi || "", addData.kalkis || "", addData.inis || "",
-      addData.ucusSuresi || "", addData.k9YanginHektar || 0, addData.miktarCekim || 0,
-      addData.tk9GorevHektar || 0, addData.uyduDk || 0, addData.aciklama || ""
-    ];
-    sheet.appendRow(newRow);
-    var lr = sheet.getLastRow();
-    try { sheet.getRange(lr, 1, 1, newRow.length).clearDataValidations(); } catch(e) {}
-    SpreadsheetApp.flush();
-    return ContentService.createTextOutput(JSON.stringify({ status: "success", action: "add", id: nextId })).setMimeType(ContentService.MimeType.JSON);
+    return createJsonResponse({ status: "error", message: "Bilinmeyen işlem türü: " + action });
 
   } catch (err) {
-    return ContentService.createTextOutput(JSON.stringify({ status: "error", message: err.toString() })).setMimeType(ContentService.MimeType.JSON);
+    return createJsonResponse({ 
+      status: "error", 
+      message: err.toString() 
+    });
   } finally {
     lock.releaseLock();
   }
@@ -3302,52 +3583,87 @@ function doPost(e) {
 
 function doGet(e) {
   var action = e && e.parameter && e.parameter.action;
+
+  // 1. Excel İndirme İsteği (Base64)
   if (action === "download") {
     try {
       var ss = SpreadsheetApp.getActiveSpreadsheet();
-      var url = "https://docs.google.com/spreadsheets/d/" + ss.getId() + "/export?format=xlsx";
+      var id = ss.getId();
+      var url = "https://docs.google.com/spreadsheets/d/" + id + "/export?format=xlsx";
       var response = UrlFetchApp.fetch(url, {
         headers: { "Authorization": "Bearer " + ScriptApp.getOAuthToken() },
         muteHttpExceptions: true
       });
-      return ContentService.createTextOutput(JSON.stringify({ status: "success", base64: Utilities.base64Encode(response.getBlob().getBytes()) })).setMimeType(ContentService.MimeType.JSON);
+      var blob = response.getBlob();
+      var base64 = Utilities.base64Encode(blob.getBytes());
+      return createJsonResponse({ status: "success", base64: base64 });
     } catch (err) {
-      return ContentService.createTextOutput(JSON.stringify({ status: "error", message: err.toString() })).setMimeType(ContentService.MimeType.JSON);
+      return createJsonResponse({ status: "error", message: err.toString() });
     }
   }
 
+  // 2. Varsayılan: JSON Veri Listesi
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = getTargetSheet(ss);
   var values = sheet.getDataRange().getValues();
-  if (values.length <= 1) return ContentService.createTextOutput(JSON.stringify([])).setMimeType(ContentService.MimeType.JSON);
+  if (values.length <= 1) {
+    return createJsonResponse([]);
+  }
 
   var resultList = [];
   for (var i = 1; i < values.length; i++) {
     var row = values[i];
-    if (row[0] === "" || row[0] === undefined || row[0] === null) continue;
+    var siraNo = row[0];
+    if (siraNo === "" || siraNo === undefined || siraNo === null) continue;
+
     resultList.push({
-      siraNo: row[0], "Sıra No": row[0],
-      tarih: row[1], "Tarih": row[1],
-      kaptanPilot: row[2], "Kaptan Pilot": row[2],
-      ikinciPilot: row[3], "2. Pilot": row[3],
-      teknisyen1: row[4], "Teknisyen 1": row[4],
-      operator1: row[5], "Operator 1": row[5],
-      teknisyen2: row[6], "Teknisyen 2": row[6],
-      operator2: row[7], "Operator 2": row[7],
-      gorevTipi: row[8], "Görev Tipi": row[8],
-      gorevBolgesi: row[9], "Görev Bölgesi": row[9],
-      kalkis: row[10], "Kalkış": row[10],
-      inis: row[11], "İniş": row[11],
-      ucusSuresi: row[12], "Uçuş Süresi": row[12],
-      k9YanginHektar: row[13], "TK-9 Yangın(Hektar)": row[13],
-      miktarCekim: row[14], "Miktar (Çekim)": row[14],
-      tk9GorevHektar: row[15], "TK-9 gorev(Hektar)": row[15],
-      uyduDk: row[16], "Uydu (Dk)": row[16],
-      aciklama: row[17], "AÇIKLAMA": row[17]
+      siraNo: siraNo,
+      "Sıra No": siraNo,
+      tarih: row[1],
+      "Tarih": row[1],
+      kaptanPilot: row[2],
+      "Kaptan Pilot": row[2],
+      ikinciPilot: row[3],
+      "2. Pilot": row[3],
+      teknisyen1: row[4],
+      "Teknisyen 1": row[4],
+      operator1: row[5],
+      "Operator 1": row[5],
+      teknisyen2: row[6],
+      "Teknisyen 2": row[6],
+      operator2: row[7],
+      "Operator 2": row[7],
+      gorevTipi: row[8],
+      "Görev Tipi": row[8],
+      gorevBolgesi: row[9],
+      "Görev Bölgesi": row[9],
+      kalkis: row[10],
+      "Kalkış": row[10],
+      inis: row[11],
+      "İniş": row[11],
+      ucusSuresi: row[12],
+      "Uçuş Süresi": row[12],
+      k9YanginHektar: row[13],
+      "TK-9 Yangın(Hektar)": row[13],
+      miktarCekim: row[14],
+      "Miktar (Çekim)": row[14],
+      tk9GorevHektar: row[15],
+      "TK-9 gorev(Hektar)": row[15],
+      uyduDk: row[16],
+      "Uydu (Dk)": row[16],
+      aciklama: row[17],
+      "AÇIKLAMA": row[17]
     });
   }
-  return ContentService.createTextOutput(JSON.stringify(resultList)).setMimeType(ContentService.MimeType.JSON);
-}`;
+
+  return createJsonResponse(resultList);
+}
+
+function createJsonResponse(data) {
+  return ContentService.createTextOutput(JSON.stringify(data))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+`;
 
 function CodeModal({ onClose }: { onClose: () => void }) {
   const [copied, setCopied] = useState(false);

@@ -1,6 +1,6 @@
 import XLSX from 'xlsx-js-style';
 
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbznmUn24yd2qSGTQZzUsXpRpQCJc59Z4CQALcV59TndN5uKUsAgHNxd2P8f7dzqSU7q/exec';
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbyEeDha6Fw4pviggDXAsUmQ1pEWm_TwTYDrirGZHKJxagOI8ZXLPEkLGgqyb9eNfhj0/exec';
 
 const parseNumeric = (val: any): number => {
   if (val === undefined || val === null || val === '') return 0;
